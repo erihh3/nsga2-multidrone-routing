@@ -1,3 +1,19 @@
-__pycache__/ 
+# Python
+__pycache__/
+*.py[cod]
 .venv/
-.git
+*.egg-info/
+
+planning/
+
+build/
+dist/
+.pytest_cache/
+
+results/*
+!results/.gitkeep
+figures/*
+!figures/.gitkeep
+
+instances/*
+!instances/.gitkeep

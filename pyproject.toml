@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uav-routing"
+version = "0.1.0"
+description = "Co-equal empirical comparison of NSGA-II vs MOPSO on bi-objective multi-UAV surveillance routing (makespan, energy)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+# Runtime deps are mirrored in requirements.txt with exact pins (reproducibility gate).
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "seaborn",
+    "deap",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+# src/ layout: `import uav` resolves to src/uav without installing into site-packages globally.
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
