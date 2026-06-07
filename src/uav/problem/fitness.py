@@ -28,9 +28,10 @@ V_CRUISE = 15.0   # m/s
 def route_distance(route: list[int], dist: np.ndarray) -> float:
     """Sum of edge distances along a depot-bookended route.
 
-    Phase 1. Stub.
+    Reads consecutive pairs from the precomputed matrix; no geometry here, so it
+    stays cheap inside the optimizer inner loop.
     """
-    raise NotImplementedError("Phase 1: route distance.")
+    return float(sum(dist[route[i], route[i + 1]] for i in range(len(route) - 1)))
 
 
 def evaluate(
@@ -43,7 +44,16 @@ def evaluate(
 ) -> tuple[float, float]:
     """Return ``(makespan_seconds, energy_joules)`` in a single pass.
 
-    Phase 1. **Hard gate**: prove this against a hand calculation (depot + 4 POIs
-    on a unit grid, 2 drones) before writing any optimizer.
+    makespan = max per-drone travel time = max_k d_k / v.
+    energy   = (alpha*mass + beta)/v * sum_k d_k.
+
+    Per the formulation, under Dorling's linear model at constant mass and
+    velocity the per-segment power ``alpha*mass + beta`` is constant, so f2 is that
+    constant divided by v times the *total* distance. We therefore compute each
+    drone's distance exactly once: makespan is their max/v, energy a scalar times
+    their sum. One pass, no duplicated geometry.
     """
-    raise NotImplementedError("Phase 1: makespan + Dorling energy.")
+    per_drone_d = [route_distance(r, dist) for r in routes]
+    makespan = max(per_drone_d) / v_cruise
+    energy = (alpha * mass + beta) / v_cruise * sum(per_drone_d)
+    return makespan, energy
