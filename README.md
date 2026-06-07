@@ -30,7 +30,6 @@ figures/              # output PDFs
 
 `instance.py` → `decode.py` → `fitness.py` (+ hand-calc test, **hard gate**) →
 `nsga2.py` → `mopso.py` → `metrics`/`reference_front`/`stats` → `runner` → `viz`.
-Do not advance past a failing gate.
 
 ## Reproducing results
 
