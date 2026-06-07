@@ -1,21 +1,5 @@
 # uav-routing
 
-Co-equal empirical comparison of **NSGA-II** vs **MOPSO** on a bi-objective
-(makespan, total energy) multi-UAV surveillance routing problem (multiple-TSP,
-`K = 3` drones).
-
-Master's discipline project (Computação Evolucionária). The deliverable is
-correct, reproducible code + figures. The authoritative math lives in
-`Project formal formulation.md`; the build blueprint in
-`CODE_IMPLEMENTATION_PLAN.md`; code conventions in `CLAUDE.md.md`.
-
-## The governing principle
-
-This is a *co-equal* comparison: the two algorithms differ in **exactly one
-thing** — the optimizer loop and its genotype. Everything downstream of a
-candidate solution is shared code called by both (one `fitness()`, one decoder
-interface, one metrics module, one `Solution` type).
-
 ## Setup
 
 ```bash
