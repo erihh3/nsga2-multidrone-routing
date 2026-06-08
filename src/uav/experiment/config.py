@@ -32,7 +32,8 @@ class Hyperparams:
     pop: int = 100
     gens: int = 500
     pcx: float = 0.9
-    pmut: float = 0.1
+    pmut: float = 0.3          # per-individual prob of inversion mutation on Part 1
+    pmut_counts: float = 0.5   # prob the Part-2 (counts) mutation also fires
     # MOPSO
     swarm: int = 100
     iters: int = 500

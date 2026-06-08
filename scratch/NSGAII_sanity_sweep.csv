@@ -1,0 +1,5 @@
+instance,longest_tour,minmax_opt,ratio,total_distance,front_points,wall_s,flag
+eil51-k3,260.0,160,1.625,740.0,4,1.25,OK (plausible for reduced budget)
+berlin52-k3,4434.0,3074,1.442,12351.0,1,1.3,OK (plausible for reduced budget)
+eil76-k3,437.0,197,2.218,1294.0,3,1.53,OK (plausible for reduced budget)
+rat99-k3,1402.0,518,2.707,4144.0,2,1.74,OK (plausible for reduced budget)
