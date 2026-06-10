@@ -21,6 +21,7 @@ from uav.algorithms.mopso import (
     _leader_sampler,
     _nondominated,
     _truncate,
+    _turbulence_fraction,
 )
 from uav.experiment.config import Budget, Hyperparams
 from uav.problem.instance import load_instance
@@ -77,6 +78,22 @@ def test_leader_selection_returns_archive_member():
     for _ in range(50):
         leader = _draw_leader(archive, groups, probs)
         assert any(leader is m for m in archive)       # identity (positions are arrays)
+
+
+def test_turbulence_fraction_respects_floor():
+    iters, rate, floor = 500, 0.5, 0.1
+    # Early: above the floor and near the initial rate.
+    assert _turbulence_fraction(1, iters, rate, floor) > floor
+    assert _turbulence_fraction(1, iters, rate, floor) <= rate
+    # At the end: pinned at the floor, never 0 (which would kill late diversity).
+    assert _turbulence_fraction(iters, iters, rate, floor) == floor
+    # Monotone non-increasing, never below the floor.
+    prev = 1.0
+    for t in range(0, iters + 1):
+        f = _turbulence_fraction(t, iters, rate, floor)
+        assert f >= floor
+        assert f <= prev + 1e-12
+        prev = f
 
 
 def test_truncate_respects_capacity():

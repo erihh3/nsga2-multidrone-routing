@@ -13,7 +13,15 @@ import os
 import numpy as np
 import pytest
 
-from uav.problem.fitness import ALPHA, BETA, MASS, V_CRUISE, evaluate, route_distance
+from uav.problem.fitness import (
+    ALPHA,
+    BETA,
+    MASS,
+    V_CRUISE,
+    CountingEvaluator,
+    evaluate,
+    route_distance,
+)
 
 # A hand-built 5-node distance matrix (depot=0 + 4 POIs), symmetric, zero diagonal.
 # Values chosen so every route sum is trivial to verify by eye.
@@ -68,6 +76,35 @@ def test_energy_is_proportional_to_total_distance():
     assert math.isclose(e2, power / V_CRUISE * total_2, rel_tol=1e-12)
     # Same total distance => same energy (29 vs total_2 may differ; assert the law).
     assert math.isclose(e1, power / V_CRUISE * 29.0, rel_tol=1e-12)
+
+
+# --- CountingEvaluator: the single shared eval counter --------------------------
+
+def test_counting_evaluator_matches_evaluate_and_counts():
+    ev = CountingEvaluator(DIST)
+    assert ev.n_calls == 0
+
+    # Same result as the bare evaluate() — the wrapper only counts, never alters.
+    direct = evaluate([ROUTE_A, ROUTE_B], DIST)
+    counted = ev([ROUTE_A, ROUTE_B])
+    assert counted == direct
+    assert ev.n_calls == 1
+
+    # One increment per call, regardless of the routes passed.
+    ev([ROUTE_A])
+    ev([ROUTE_B])
+    assert ev.n_calls == 3
+
+    ev.reset()
+    assert ev.n_calls == 0
+
+
+def test_counting_evaluator_forwards_params():
+    # Non-default coefficients must flow through to evaluate() unchanged.
+    ev = CountingEvaluator(DIST, alpha=1.0, beta=2.0, mass=3.0, v_cruise=4.0)
+    assert ev([ROUTE_A, ROUTE_B]) == evaluate(
+        [ROUTE_A, ROUTE_B], DIST, alpha=1.0, beta=2.0, mass=3.0, v_cruise=4.0
+    )
 
 
 def test_makespan_bounded_by_slowest_drone():

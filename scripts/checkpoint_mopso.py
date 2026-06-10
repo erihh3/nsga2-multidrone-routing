@@ -19,6 +19,7 @@ Usage:  python scripts/checkpoint_mopso.py
 from __future__ import annotations
 
 import os
+import sys
 
 import matplotlib
 
@@ -68,7 +69,12 @@ def _union_front(optimizer_cls, inst, hp):
 
 
 def main() -> None:
-    inst = load_instance(os.path.join(ROOT, "instances", "eil51.tsp"), k=3)
+    # Instance is selectable: `python scripts/checkpoint_mopso.py [name]`.
+    # Defaults to eil51 (the Phase-3 development/gate instance); the .tsp stem is
+    # the part before "-k3" (e.g. "rat99-k3" -> "rat99.tsp").
+    name = sys.argv[1] if len(sys.argv) > 1 else "eil51"
+    stem = name.split("-")[0]
+    inst = load_instance(os.path.join(ROOT, "instances", f"{stem}.tsp"), k=3)
     hp = Hyperparams()  # nominal full budget for both arms
 
     mopso = _union_front(MOPSO, inst, hp)
@@ -107,7 +113,7 @@ def main() -> None:
     ax.set_title(f"MOPSO vs NSGA-II Pareto front — {inst.name} ({len(list(SEEDS))} seeds)")
     ax.legend(fontsize=8)
     fig.tight_layout()
-    out = os.path.join(ROOT, "figures", "mopso_eil51_checkpoint.png")
+    out = os.path.join(ROOT, "figures", f"mopso_{stem}_checkpoint.png")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     fig.savefig(out, dpi=120)
     print(f"saved figure    : {out}")

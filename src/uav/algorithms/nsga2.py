@@ -40,7 +40,7 @@ from deap import base, creator, tools
 
 from uav.algorithms.base import GenStats, Optimizer, RunResult
 from uav.problem.decode import decode_two_part
-from uav.problem.fitness import evaluate
+from uav.problem.fitness import CountingEvaluator
 from uav.seeds import set_all_seeds
 from uav.solution import Solution
 
@@ -170,10 +170,16 @@ class NSGA2(Optimizer):
         toolbox.register("individual", _init_individual, n_pois, k)
         toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
+        # The single shared eval counter (CLAUDE.md invariant): every fitness call
+        # — initial population and each generation's invalid offspring — flows
+        # through this one wrapper, so run()'s n_evals is the *measured* count with
+        # no second tally to drift out of sync. MOPSO routes through the same class.
+        self._ev = CountingEvaluator(dist)
+
         def _evaluate(ind):
             # The single shared fitness — identical to the one MOPSO will call.
             routes = _genotype_to_routes(ind, poi_ids, depot)
-            return evaluate(routes, dist)
+            return self._ev(routes)
 
         def _mate(ind1, ind2):
             tools.cxOrdered(ind1, ind2)                      # OX on the perm
@@ -233,7 +239,6 @@ class NSGA2(Optimizer):
         pop = toolbox.population(n=hp.pop)
         for ind in pop:
             ind.fitness.values = toolbox.evaluate(ind)
-        n_evals = len(pop)
         # Assign crowding distance / rank for the first DCD tournament.
         pop = toolbox.select(pop, hp.pop)
 
@@ -254,7 +259,6 @@ class NSGA2(Optimizer):
             invalid = [ind for ind in offspring if not ind.fitness.valid]
             for ind in invalid:
                 ind.fitness.values = toolbox.evaluate(ind)
-            n_evals += len(invalid)
 
             pop = toolbox.select(self._dedup(pop + offspring), hp.pop)
             history.append(self._gen_stats(gen, pop))
@@ -266,5 +270,5 @@ class NSGA2(Optimizer):
             final_front=final_front,
             history=history,
             wall_clock_s=wall,
-            n_evals=n_evals,
+            n_evals=self._ev.n_calls,    # the single shared counter (one source of truth)
         )
