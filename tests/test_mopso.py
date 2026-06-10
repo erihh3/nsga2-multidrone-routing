@@ -120,7 +120,7 @@ def test_decoded_swarm_is_feasible():
         pois = sorted(p for r in routes for p in r if p != depot)
         assert pois == list(range(1, n + 1))           # every POI exactly once
         assert all(r[0] == depot and r[-1] == depot for r in routes)
-        assert all(len(r) >= 3 for r in routes)        # >=1 POI per drone
+        assert all(len(r) >= 2 for r in routes)        # >=0 POIs (empty allowed)
 
 
 # --- integration run ------------------------------------------------------------
@@ -154,7 +154,8 @@ def test_reduced_budget_run_is_feasible_and_nondominated():
         pois = sorted(p for r in s.routes for p in r if p != inst.depot)
         assert pois == list(range(1, n + 1))
         assert all(r[0] == inst.depot and r[-1] == inst.depot for r in s.routes)
-        assert all(len(r) >= 3 for r in s.routes)
+        assert all(len(r) >= 2 for r in s.routes)     # empty route = [depot, depot]
+        assert 1 <= s.n_active_drones <= inst.k
         assert np.isfinite(s.makespan) and s.makespan > 0
         assert np.isfinite(s.energy) and s.energy > 0
 

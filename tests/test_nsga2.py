@@ -17,6 +17,7 @@ from uav.algorithms.nsga2 import (
     _cx_counts,
     _init_individual,
     _mut_counts,
+    _random_composition,
     _repair_counts,
 )
 from uav.experiment.config import Budget, Hyperparams
@@ -33,7 +34,9 @@ requires_eil51 = pytest.mark.skipif(
 # --- counts feasibility ---------------------------------------------------------
 
 def _valid_counts(counts, n, k):
-    return len(counts) == k and sum(counts) == n and min(counts) >= 1
+    # Variable fleet: a valid split sums to N with every count >= 0 (empty drones
+    # allowed). Negative counts remain invalid.
+    return len(counts) == k and sum(counts) == n and min(counts) >= 0
 
 
 def test_repair_counts_random_and_degenerate():
@@ -59,6 +62,51 @@ def test_cx_and_mut_counts_preserve_feasibility():
         d1, d2 = _cx_counts(c1, c2, n, k)
         assert _valid_counts(d1, n, k) and _valid_counts(d2, n, k)
         assert _valid_counts(_mut_counts(c1, n, k), n, k)
+
+
+def test_mut_counts_consolidation_empties_a_donor(monkeypatch):
+    # Force the consolidation branch (random.random() < 0.5): a non-empty donor's
+    # whole count is dumped onto another drone, so the sum is preserved and a new
+    # zero appears. This is what makes the 1-/2-drone (energy-end) region reachable
+    # in a single mutation rather than ~N/K accepted single-POI shifts.
+    import random
+    monkeypatch.setattr(random, "random", lambda: 0.0)   # always consolidate
+    n, k = 50, 3
+    for _ in range(200):
+        out = _mut_counts([10, 20, 20], n, k)            # no zeros in the input
+        assert sum(out) == n
+        assert min(out) >= 0
+        assert 0 in out                                  # a drone was deactivated
+
+
+def test_mut_counts_can_reach_a_single_active_drone():
+    # Over many mutations, the operator must be able to drive a balanced split all
+    # the way down to one active drone (the energy extreme). Pure single-POI drift
+    # would make this practically unreachable.
+    import random
+    random.seed(3)
+    n, k = 50, 3
+    counts = _repair_counts([17, 17, 16], n, k)
+    reached_single = False
+    for _ in range(200):
+        counts = _mut_counts(counts, n, k)
+        assert sum(counts) == n and min(counts) >= 0
+        if sum(1 for c in counts if c > 0) == 1:
+            reached_single = True
+            break
+    assert reached_single
+
+
+def test_random_composition_allows_zeros_and_sums_to_n():
+    import random
+    random.seed(4)
+    n, k = 50, 3
+    saw_zero = False
+    for _ in range(500):
+        comp = _random_composition(n, k)
+        assert len(comp) == k and sum(comp) == n and min(comp) >= 0
+        saw_zero = saw_zero or (0 in comp)
+    assert saw_zero                                      # zeros are representable
 
 
 def test_init_individual_is_a_valid_permutation():
@@ -102,7 +150,8 @@ def test_reduced_budget_run_is_feasible_and_nondominated():
         pois = sorted(p for r in s.routes for p in r if p != inst.depot)
         assert pois == list(range(1, N + 1))         # every POI exactly once
         assert all(r[0] == inst.depot and r[-1] == inst.depot for r in s.routes)
-        assert all(len(r) >= 3 for r in s.routes)    # >=1 POI per drone
+        assert all(len(r) >= 2 for r in s.routes)    # >=0 POIs (empty = [depot,depot])
+        assert 1 <= s.n_active_drones <= inst.k       # variable fleet, >=1 flies
         assert np.isfinite(s.makespan) and s.makespan > 0
         assert np.isfinite(s.energy) and s.energy > 0
 

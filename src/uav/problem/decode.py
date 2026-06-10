@@ -16,16 +16,21 @@ def _partition_to_routes(order: list[int], counts: list[int], depot: int) -> lis
     This is the *single* place a (visit order, per-drone counts) pair becomes the
     shared phenotype. Both decoders funnel through it, so the two algorithms are
     guaranteed structurally identical downstream — not identical by coincidence.
+
+    Variable-fleet invariant: counts sum to N and each c_k >= 0. A zero count is
+    legal — that drone stays at the depot and slices to an empty segment, i.e. the
+    route ``[depot, depot]`` (zero distance, zero cost in ``evaluate``). The number
+    of active UAVs is thus a decision variable, not a fixed K.
     """
     if sum(counts) != len(order):
         raise ValueError(f"counts sum {sum(counts)} != number of POIs {len(order)}")
-    if min(counts) < 1:
-        raise ValueError(f"every drone must visit >=1 POI; got counts={counts}")
+    if min(counts) < 0:
+        raise ValueError(f"counts must be >= 0; got counts={counts}")
 
     routes: list[list[int]] = []
     cursor = 0
     for c in counts:
-        segment = order[cursor:cursor + c]
+        segment = order[cursor:cursor + c]      # empty when c == 0 -> [depot, depot]
         routes.append([depot, *segment, depot])
         cursor += c
     return routes
@@ -35,22 +40,25 @@ def decode_two_part(perm: list[int], counts: list[int], depot: int) -> list[list
     """NSGA-II genotype -> routes.
 
     ``perm`` is a permutation of POI ids; ``counts`` (length K) sums to N with
-    each >= 1. Part 1 fixes the global visit order, Part 2 the per-drone load; the
+    each >= 0. Part 1 fixes the global visit order, Part 2 the per-drone load; the
     two are read straight through into contiguous segments.
     """
     return _partition_to_routes(list(perm), list(counts), depot)
 
 
 def _counts_from_keys(weight_keys: np.ndarray, n_pois: int, k: int) -> list[int]:
-    """Turn the K split-keys into per-drone counts summing to N, each >= 1.
+    """Turn the K split-keys into per-drone counts summing to N, each >= 0.
 
-    Largest-remainder apportionment, then a guaranteed repair: this is what makes
-    the random-key phenotype space *exactly* the two-part one (every valid (order,
-    counts) partition is reachable, and no decode is ever infeasible).
+    Largest-remainder apportionment with no >=1 repair: zero counts are now legal
+    (variable fleet — a drone may stay at the depot). This keeps the random-key
+    phenotype space *exactly* the two-part one (every valid (order, counts)
+    partition, zeros included, is reachable and no decode is ever infeasible).
     """
     w = np.asarray(weight_keys, dtype=np.float64)
     total = w.sum()
-    # Degenerate keys (all zero / negative) fall back to a uniform split.
+    # Degenerate keys (all zero / negative) would make proportions ill-defined
+    # (0/0). Fall back to a uniform split — never NaN. This is the only guard the
+    # relaxation still needs; zero per-drone counts themselves are valid.
     proportions = (w / total) if total > 0 else np.full(k, 1.0 / k)
 
     raw = proportions * n_pois
@@ -62,14 +70,7 @@ def _counts_from_keys(weight_keys: np.ndarray, n_pois: int, k: int) -> list[int]
         for i in range(leftover):
             counts[order[i % k]] += 1
 
-    # Enforce >= 1 by stealing from the currently largest count.
-    counts = counts.tolist()
-    for i in range(k):
-        if counts[i] == 0:
-            donor = int(np.argmax(counts))
-            counts[donor] -= 1
-            counts[i] += 1
-    return counts
+    return counts.tolist()
 
 
 def decode_random_key(keys: np.ndarray, n_pois: int, k: int, depot: int) -> list[list[int]]:

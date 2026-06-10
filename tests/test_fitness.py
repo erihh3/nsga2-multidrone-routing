@@ -107,6 +107,24 @@ def test_counting_evaluator_forwards_params():
     )
 
 
+def test_empty_route_contributes_zero():
+    # Variable fleet: a drone that stays at the depot decodes to [depot, depot].
+    # Its single leg is d(depot, depot) = 0, so it adds nothing to either
+    # objective — fitness needs no special-casing for it. Here drones A and B fly
+    # (the two-active-drone case) and the third route is empty.
+    empty = [0, 0]
+    assert route_distance(empty, DIST) == 0.0
+
+    makespan, energy = evaluate([ROUTE_A, ROUTE_B, empty], DIST)
+    # Identical to the two-drone result: makespan = max over the *active* routes,
+    # energy counts only flown segments (total 12 + 17 + 0 = 29).
+    power = ALPHA * MASS + BETA
+    assert math.isclose(makespan, 17.0 / V_CRUISE, rel_tol=1e-12)
+    assert math.isclose(energy, power / V_CRUISE * 29.0, rel_tol=1e-12)
+    # And exactly the two-active-drone evaluation, empty route appended or not.
+    assert evaluate([ROUTE_A, ROUTE_B, empty], DIST) == evaluate([ROUTE_A, ROUTE_B], DIST)
+
+
 def test_makespan_bounded_by_slowest_drone():
     # Makespan ignores the faster drones entirely.
     short = [0, 1, 0]            # 3 + 3 = 6

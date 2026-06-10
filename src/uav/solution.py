@@ -32,3 +32,14 @@ class Solution:
     @property
     def objectives(self) -> tuple[float, float]:
         return (self.makespan, self.energy)
+
+    @property
+    def n_active_drones(self) -> int:
+        """Number of UAVs that actually fly (variable-fleet metadata).
+
+        An empty (depot-only) route is ``[depot, depot]`` — length 2, no POI — so
+        an active route is any route longer than that. Computed from ``routes`` so
+        it is always consistent for both decoders; carried for paper plots only,
+        never branched on by any metric.
+        """
+        return sum(1 for r in self.routes if len(r) > 2)

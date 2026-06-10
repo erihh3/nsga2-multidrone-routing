@@ -13,6 +13,9 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 uv pip install -e .
 
-# Phase 5: python -m uav.experiment.runner
-echo "run_experiments.sh: runner not yet implemented (Phase 5)." >&2
-exit 1
+# Full matrix by default; any CLI filters pass straight through to the runner:
+#   ./run_experiments.sh                                  # 4 x 2 x 10 = 80 runs
+#   ./run_experiments.sh --instance eil51-k3              # one instance
+#   ./run_experiments.sh --algorithm nsga2                # one arm, all instances
+#   ./run_experiments.sh --instance eil51-k3 --seed 0,1,2 # split across sessions
+exec python -m uav.experiment.runner "$@"
