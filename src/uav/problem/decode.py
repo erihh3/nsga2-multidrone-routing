@@ -49,28 +49,32 @@ def decode_two_part(perm: list[int], counts: list[int], depot: int) -> list[list
 def _counts_from_keys(weight_keys: np.ndarray, n_pois: int, k: int) -> list[int]:
     """Turn the K split-keys into per-drone counts summing to N, each >= 0.
 
-    Largest-remainder apportionment with no >=1 repair: zero counts are now legal
-    (variable fleet — a drone may stay at the depot). This keeps the random-key
-    phenotype space *exactly* the two-part one (every valid (order, counts)
-    partition, zeros included, is reachable and no decode is ever infeasible).
+    **Stars-and-bars cut-points** — the *same* construction NSGA-II uses in
+    ``nsga2._random_composition``. The first ``K-1`` keys are read as independent
+    cut positions on the integer line ``[0, N]`` (``round(key * N)``); sorted, they
+    split ``N`` into ``K`` contiguous gaps, which are the per-drone counts.
+
+    Why this and not proportional (largest-remainder) apportionment: a zero count
+    must be *reachable* for the fleet size to be a real decision variable. Under
+    apportionment a drone goes idle only if its share falls below ``1/N`` — a tiny
+    corner of the key space the swarm never reaches, so MOPSO collapsed to all-K
+    active drones (measured: 0/40 idle-drone solutions). With independent cuts a
+    zero is a first-class outcome (two cuts coincide, or a cut hits ``0``/``N``),
+    and because each cut moves continuously with its key, PSO can drive a key to
+    create and *hold* an idle drone. This also gives MOPSO the same fleet-sampling
+    density as the two-part chromosome, so the comparison is fair on the fleet axis.
+
+    The ``K``-th fleet key is unused — ``K-1`` cuts fully determine ``K`` counts —
+    but the genotype keeps length ``N+K`` so the PSO velocity/position arrays and
+    ``decode_random_key``'s length contract are unaffected. Reachability is total:
+    any composition is hit by cut fractions = its cumulative counts / N. All-zero
+    keys give cuts ``[0, 0]`` -> counts ``[0, ..., 0, N]`` (a valid 1-drone split),
+    so there is no divide-by-zero to guard against.
     """
-    w = np.asarray(weight_keys, dtype=np.float64)
-    total = w.sum()
-    # Degenerate keys (all zero / negative) would make proportions ill-defined
-    # (0/0). Fall back to a uniform split — never NaN. This is the only guard the
-    # relaxation still needs; zero per-drone counts themselves are valid.
-    proportions = (w / total) if total > 0 else np.full(k, 1.0 / k)
-
-    raw = proportions * n_pois
-    counts = np.floor(raw).astype(int)
-    # Distribute the leftover units by largest fractional remainder.
-    leftover = n_pois - int(counts.sum())
-    if leftover > 0:
-        order = np.argsort(-(raw - counts))           # descending remainder
-        for i in range(leftover):
-            counts[order[i % k]] += 1
-
-    return counts.tolist()
+    w = np.clip(np.asarray(weight_keys, dtype=np.float64)[: k - 1], 0.0, 1.0)
+    cuts = sorted(int(round(c)) for c in w * n_pois)   # K-1 positions in [0, N]
+    bounds = [0, *cuts, n_pois]
+    return [bounds[i + 1] - bounds[i] for i in range(k)]
 
 
 def decode_random_key(keys: np.ndarray, n_pois: int, k: int, depot: int) -> list[list[int]]:
