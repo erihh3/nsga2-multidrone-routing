@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 from uav.algorithms.base import RunResult
+from uav.algorithms.dmopso import DiscreteMOPSO
 from uav.algorithms.mopso import MOPSO
 from uav.algorithms.nsga2 import NSGA2
 from uav.experiment.config import INSTANCES, SEEDS, Budget, Hyperparams, parity_iters
@@ -51,17 +52,26 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.par
 RESULTS = os.path.join(ROOT, "results")
 INSTANCES_DIR = os.path.join(ROOT, "instances")
 
+# The DEFAULT sweep set (no --algorithm filter) stays the two co-equal baselines.
+# ``dmopso`` is the scoped encoding-diagnostic MOPSO *variant* (Attempt C): a valid
+# but OPT-IN value — runnable only via explicit ``--algorithm dmopso`` — so adding
+# it cannot change the default sweep's behaviour. Validation is against
+# ``_OPTIMIZERS`` (below), not this tuple, so dmopso is accepted while staying out
+# of the default matrix.
 ALGORITHMS: tuple[str, ...] = ("nsga2", "mopso")
-_OPTIMIZERS = {"nsga2": NSGA2, "mopso": MOPSO}
+_OPTIMIZERS = {"nsga2": NSGA2, "mopso": MOPSO, "dmopso": DiscreteMOPSO}
 
 # Hyperparams is one combined dataclass holding BOTH arms' fields; each run only
 # uses (and so persists) its own subset. Identical to eval_eil51's convention so
 # the JSON schema and the resume hyperparameter match are consistent across both.
+# dmopso reuses MOPSO's hyperparameter fields verbatim (it differs only in the
+# order genotype + its update; w/c1/c2/turbulence schedule are shared).
 _HP_FIELDS = {
     "nsga2": ("pop", "gens", "pcx", "pmut", "pmut_counts"),
     "mopso": ("swarm", "iters", "archive_size", "grid_divisions", "w_inertia",
               "c1", "c2", "vmax_frac", "mut_rate", "mut_floor"),
 }
+_HP_FIELDS["dmopso"] = _HP_FIELDS["mopso"]
 
 LOG_HEADER = [
     "algorithm", "instance", "seed", "hyperparams_json", "n_evals",
@@ -277,6 +287,28 @@ def run_all(instances=INSTANCES, algorithms=ALGORITHMS, seeds=SEEDS,
                 _execute("mopso", instance, inst, seed, hp, results_dir, log_rows)
                 completed += 1
 
+        # --- discrete-MOPSO (Attempt C) at the SAME measured-eval parity. --------
+        # Opt-in only (never in the default set). It re-evaluates the whole swarm
+        # each iteration like MOPSO, so it reuses the identical parity budget and,
+        # like MOPSO, refuses to guess one without NSGA-II's 10 runs on disk.
+        if "dmopso" in algorithms:
+            iters = _resolve_parity(results_dir, instance, Hyperparams().swarm)
+            if iters is None:
+                msg = (f"dmopso requested for {instance} but its 10 NSGA-II runs are "
+                       f"not all on disk — run NSGA-II for {instance} first "
+                       f"(budget parity needs the measured mean).")
+                print(f"  [error] {msg}")
+                errors.append(msg)
+                continue
+            hp = dataclasses.replace(Hyperparams(iters=iters), **hp_overrides)
+            for seed in seeds:
+                if _already_done(log_rows, "dmopso", instance, seed, _hp_key(hp, "dmopso")):
+                    print(f"  [skip] dmopso {instance} seed {seed} (already in log.csv)")
+                    skipped += 1
+                    continue
+                _execute("dmopso", instance, inst, seed, hp, results_dir, log_rows)
+                completed += 1
+
     print(f"\nsummary: completed={completed} skipped={skipped} errors={len(errors)}")
     return {"completed": completed, "skipped": skipped, "errors": errors}
 
@@ -298,7 +330,9 @@ def _parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--instance", action="append",
                    help="instance name(s), repeatable or comma-separated (default: all)")
     p.add_argument("--algorithm", action="append",
-                   help="nsga2 and/or mopso, repeatable or comma-separated (default: both)")
+                   help="nsga2 and/or mopso (default: both); dmopso is the opt-in "
+                        "encoding-diagnostic variant — never run by default. "
+                        "Repeatable or comma-separated.")
     p.add_argument("--seed", action="append",
                    help="seed(s), repeatable or comma-separated (default: the 10 fixed seeds)")
     return p.parse_args(argv)
@@ -311,11 +345,12 @@ def main(argv=None) -> int:
     seeds = [int(s) for s in (_split(args.seed) or [str(s) for s in SEEDS])]
 
     bad_i = [i for i in instances if i not in INSTANCES]
-    bad_a = [a for a in algorithms if a not in ALGORITHMS]
+    # Validate against the registry (includes opt-in ``dmopso``), not the default set.
+    bad_a = [a for a in algorithms if a not in _OPTIMIZERS]
     if bad_i:
         raise SystemExit(f"unknown instance(s): {bad_i}; valid: {list(INSTANCES)}")
     if bad_a:
-        raise SystemExit(f"unknown algorithm(s): {bad_a}; valid: {list(ALGORITHMS)}")
+        raise SystemExit(f"unknown algorithm(s): {bad_a}; valid: {list(_OPTIMIZERS)}")
 
     print(f"running: instances={instances} algorithms={algorithms} seeds={seeds}\n")
     summary = run_all(instances=instances, algorithms=algorithms, seeds=seeds)

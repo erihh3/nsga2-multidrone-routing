@@ -14,7 +14,14 @@ import os
 
 import pytest
 
-from uav.experiment.runner import _log_path, _run_json_path, run_all
+from uav.experiment.config import SEEDS
+from uav.experiment.runner import (
+    ALGORITHMS,
+    _OPTIMIZERS,
+    _log_path,
+    _run_json_path,
+    run_all,
+)
 
 _EIL51 = os.path.abspath(
     os.path.join(os.path.dirname(__file__), os.pardir, "instances", "eil51.tsp")
@@ -30,6 +37,14 @@ _TINY = {"pop": 8, "gens": 2}
 def _log_rows(results_dir):
     with open(_log_path(results_dir), newline="") as fh:
         return list(csv.DictReader(fh))
+
+
+def test_dmopso_is_opt_in_only():
+    # The diagnostic variant must be runnable (registered) but NEVER pulled into
+    # the default sweep — a no-filter run stays exactly the two baselines.
+    assert ALGORITHMS == ("nsga2", "mopso")
+    assert "dmopso" not in ALGORITHMS
+    assert "dmopso" in _OPTIMIZERS
 
 
 @requires_eil51
@@ -67,3 +82,36 @@ def test_mopso_refuses_without_nsga2_parity(tmp_path):
     assert s["completed"] == 0
     assert s["errors"]
     assert not os.path.exists(_run_json_path(str(tmp_path), "eil51-k3", "mopso", 0))
+
+
+@requires_eil51
+def test_dmopso_refuses_without_nsga2_parity(tmp_path):
+    # The opt-in diagnostic variant shares MOPSO's parity contract: with no
+    # NSGA-II runs on disk it must refuse rather than guess a budget.
+    s = run_all(instances=["eil51-k3"], algorithms=["dmopso"], seeds=[0],
+                results_dir=str(tmp_path), hp_overrides=_TINY)
+    assert s["completed"] == 0
+    assert s["errors"]
+    assert not os.path.exists(_run_json_path(str(tmp_path), "eil51-k3", "dmopso", 0))
+
+
+@requires_eil51
+def test_dmopso_single_cell_runs_once_then_resumes(tmp_path):
+    rd = str(tmp_path)
+    # Parity needs all 10 NSGA-II runs on disk first (the measured mean).
+    run_all(instances=["eil51-k3"], algorithms=["nsga2"], seeds=list(SEEDS),
+            results_dir=rd, hp_overrides=_TINY)
+
+    # First dmopso invocation: exactly one run, one JSON, one new log row.
+    s1 = run_all(instances=["eil51-k3"], algorithms=["dmopso"], seeds=[0],
+                 results_dir=rd, hp_overrides=_TINY)
+    assert s1 == {"completed": 1, "skipped": 0, "errors": []}
+    assert os.path.exists(_run_json_path(rd, "eil51-k3", "dmopso", 0))
+    dmopso_rows = [r for r in _log_rows(rd) if r["algorithm"] == "dmopso"]
+    assert len(dmopso_rows) == 1
+
+    # Second invocation with matching hyperparameters -> skip, no new row.
+    s2 = run_all(instances=["eil51-k3"], algorithms=["dmopso"], seeds=[0],
+                 results_dir=rd, hp_overrides=_TINY)
+    assert s2 == {"completed": 0, "skipped": 1, "errors": []}
+    assert len([r for r in _log_rows(rd) if r["algorithm"] == "dmopso"]) == 1

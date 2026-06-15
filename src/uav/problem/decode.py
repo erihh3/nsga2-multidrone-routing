@@ -92,3 +92,25 @@ def decode_random_key(keys: np.ndarray, n_pois: int, k: int, depot: int) -> list
     order = [poi_ids[j] for j in np.argsort(keys[:n_pois], kind="stable")]
     counts = _counts_from_keys(keys[n_pois:], n_pois, k)
     return _partition_to_routes(order, counts, depot)
+
+
+def decode_discrete(perm, kappa, n_pois: int, k: int, depot: int) -> list[list[int]]:
+    """Discrete-MOPSO hybrid genotype -> routes.
+
+    A discrete particle is (``perm``, ``kappa``): a *genuine* permutation of the
+    0-based POI positions ``0..N-1`` (the NSGA-II convention) plus K continuous
+    cut-keys. This is the encoding-diagnostic arm (Attempt C): only the *order*
+    representation changes — random-key + argsort is replaced by a permutation
+    evolved with swap sequences — while the count axis stays the existing
+    continuous cut-keys. So this funnels through the *same* count decoder and the
+    *same* phenotype builder as the other two arms; the phenotype space is
+    identical by construction and any result is attributable to the order encoding.
+
+    ``perm`` holds 0-based positions, mapped to POI ids exactly as
+    ``decode_random_key`` does after its argsort; ``kappa`` is the K cut-keys
+    (first K-1 used), decoded by the shared ``_counts_from_keys``.
+    """
+    poi_ids = [node for node in range(n_pois + 1) if node != depot]
+    order = [poi_ids[p] for p in perm]
+    counts = _counts_from_keys(np.asarray(kappa, dtype=np.float64), n_pois, k)
+    return _partition_to_routes(order, counts, depot)
