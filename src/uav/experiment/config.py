@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# 10 fixed seeds — set for random + numpy, logged per run. Single-seed = noise.
-SEEDS: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+# 30 fixed seeds — set for random + numpy, logged per run. Single-seed = noise.
+SEEDS: tuple[int, ...] = tuple(range(30))
 
 # K=3 for every instance (locked).
 INSTANCES: tuple[str, ...] = ("eil51-k3", "berlin52-k3", "eil76-k3", "rat99-k3")
