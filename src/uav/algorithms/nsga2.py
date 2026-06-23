@@ -5,8 +5,8 @@ Operators (justified in CODE_IMPLEMENTATION_PLAN.md):
   (canonical NSGA-II, Deb 2002), with duplicate removal before environmental
   selection
 - crossover P1: tools.cxOrdered (OX, order-preserving)
-- crossover P2: one-point on counts + repair to (sum=N, each>=1)
-- mutation P1: inversion (reverse a random sub-tour) + P2: light +-1 reshuffle
+- crossover P2: one-point on counts + repair to (sum=N, each>=0)
+- mutation P1: inversion (reverse a random sub-tour) + P2: shift/consolidate split
 - weights = (-1.0, -1.0); both objectives minimized
 
 **Two deviations from the literal plan table, forced by a measured premature-
@@ -26,8 +26,9 @@ The genotype is the *only* thing that differs from MOPSO. Everything downstream
 (decode_two_part, evaluate) is the shared core, called unchanged — there is no
 GA-specific fitness or distance code here.
 
-Repair after every P2 operator is mandatory: a drone with 0 POIs silently
-corrupts fitness (decode_two_part also raises on it, as a guardrail).
+Repair after every P2 operator restores ``sum(counts) == N`` with each count
+``>= 0`` (variable fleet: empty drones are legal). The decoder guardrail now only
+rejects negative counts.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from deap import base, creator, tools
 
 from uav.algorithms.base import GenStats, Optimizer, RunResult
 from uav.problem.decode import decode_two_part
-from uav.problem.fitness import evaluate
+from uav.problem.fitness import CountingEvaluator
 from uav.seeds import set_all_seeds
 from uav.solution import Solution
 
@@ -58,16 +59,17 @@ if not hasattr(creator, "Individual"):
 # --- Part-2 (counts) helpers ----------------------------------------------------
 
 def _repair_counts(counts: list[int], n_pois: int, k: int) -> list[int]:
-    """Force counts to be a valid split: sum == n_pois and every entry >= 1.
+    """Force counts to be a valid split: sum == n_pois and every entry >= 0.
 
-    Assumes n_pois >= k (true for all four instances). Clamp up to 1 first, then
-    nudge single units at random indices until the total matches.
+    Variable fleet: zero counts are legal (a drone may stay at the depot), so the
+    only clamp is non-negativity. Nudge single units at random indices until the
+    total matches; surplus is only ever taken from a drone that still has > 0.
     """
-    counts = [max(1, int(c)) for c in counts]
+    counts = [max(0, int(c)) for c in counts]
     total = sum(counts)
-    while total > n_pois:                      # remove units from drones with >1
+    while total > n_pois:                      # remove units from drones with >0
         i = random.randrange(k)
-        if counts[i] > 1:
+        if counts[i] > 0:
             counts[i] -= 1
             total -= 1
     while total < n_pois:                       # add units anywhere
@@ -87,15 +89,34 @@ def _cx_counts(c1: list[int], c2: list[int], n_pois: int, k: int) -> tuple[list[
 
 
 def _mut_counts(counts: list[int], n_pois: int, k: int) -> list[int]:
-    """Move one POI from a random donor (with >1) to a random recipient."""
+    """Mutate the per-drone split. Two moves, chosen with equal probability:
+
+    - *shift*: move one POI from a random non-empty donor to another drone (the
+      fine, local move — explores nearby balanced splits);
+    - *consolidate*: dump a non-empty donor's entire count onto another drone
+      (``c_dst += c_src; c_src = 0``), deactivating that drone in one step.
+
+    The consolidation move exists for **reachability of the relaxed search space**,
+    not as a local search. One-POI shifts would need ~N/K accepted steps in a row
+    (~17 on eil51) to drive a balanced split down to a single active drone, so the
+    energy end of the front — one drone flying the whole tour — is effectively
+    unreachable by drift alone. A whole-count dump makes 1-/2-drone solutions
+    reachable in a single mutation.
+    """
     counts = list(counts)
     if k >= 2:
-        donors = [i for i in range(k) if counts[i] > 1]
+        donors = [i for i in range(k) if counts[i] > 0]
         if donors:
             src = random.choice(donors)
             dst = random.choice([i for i in range(k) if i != src])
-            counts[src] -= 1
-            counts[dst] += 1
+            if random.random() < 0.5:
+                # consolidate: empty the donor entirely onto the recipient
+                counts[dst] += counts[src]
+                counts[src] = 0
+            else:
+                # shift: move a single POI
+                counts[src] -= 1
+                counts[dst] += 1
     return _repair_counts(counts, n_pois, k)
 
 
@@ -115,20 +136,31 @@ def _inversion(ind) -> None:
 
 # --- individual construction + conversion --------------------------------------
 
+def _random_composition(n: int, k: int) -> list[int]:
+    """A uniform random composition of ``n`` into ``k`` non-negative parts.
+
+    Stars-and-bars: place K-1 cut points (with replacement) in {0..N} and take the
+    sorted adjacent gaps. Parts may be zero, so the initial population already
+    spans 1-, 2-, and 3-active-drone individuals — the relaxed search space is
+    represented from generation 0 rather than relying on mutation to discover it.
+    """
+    cuts = sorted(random.randint(0, n) for _ in range(k - 1))
+    bounds = [0, *cuts, n]
+    return [bounds[i + 1] - bounds[i] for i in range(k)]
+
+
 def _init_individual(n_pois: int, k: int):
     """Random valid individual.
 
     The genotype is a permutation of **0-based positions** ``0..N-1`` (not POI
     ids) so DEAP's ``cxOrdered`` — which indexes a helper array by gene value —
     stays in range (POI ids are 1..N and would overflow). Positions map to POI ids
-    only at decode time. Counts is a random feasible split.
+    only at decode time. Counts is a random feasible split allowing empty drones.
     """
     perm = list(range(n_pois))
     random.shuffle(perm)
     ind = creator.Individual(perm)
-    # Random split: start from an even base, then redistribute a little.
-    base_counts = [n_pois // k] * k
-    ind.counts = _mut_counts(_repair_counts(base_counts, n_pois, k), n_pois, k)
+    ind.counts = _random_composition(n_pois, k)
     return ind
 
 
@@ -170,10 +202,16 @@ class NSGA2(Optimizer):
         toolbox.register("individual", _init_individual, n_pois, k)
         toolbox.register("population", tools.initRepeat, list, toolbox.individual)
 
+        # The single shared eval counter (CLAUDE.md invariant): every fitness call
+        # — initial population and each generation's invalid offspring — flows
+        # through this one wrapper, so run()'s n_evals is the *measured* count with
+        # no second tally to drift out of sync. MOPSO routes through the same class.
+        self._ev = CountingEvaluator(dist)
+
         def _evaluate(ind):
             # The single shared fitness — identical to the one MOPSO will call.
             routes = _genotype_to_routes(ind, poi_ids, depot)
-            return evaluate(routes, dist)
+            return self._ev(routes)
 
         def _mate(ind1, ind2):
             tools.cxOrdered(ind1, ind2)                      # OX on the perm
@@ -233,7 +271,6 @@ class NSGA2(Optimizer):
         pop = toolbox.population(n=hp.pop)
         for ind in pop:
             ind.fitness.values = toolbox.evaluate(ind)
-        n_evals = len(pop)
         # Assign crowding distance / rank for the first DCD tournament.
         pop = toolbox.select(pop, hp.pop)
 
@@ -254,7 +291,6 @@ class NSGA2(Optimizer):
             invalid = [ind for ind in offspring if not ind.fitness.valid]
             for ind in invalid:
                 ind.fitness.values = toolbox.evaluate(ind)
-            n_evals += len(invalid)
 
             pop = toolbox.select(self._dedup(pop + offspring), hp.pop)
             history.append(self._gen_stats(gen, pop))
@@ -266,5 +302,5 @@ class NSGA2(Optimizer):
             final_front=final_front,
             history=history,
             wall_clock_s=wall,
-            n_evals=n_evals,
+            n_evals=self._ev.n_calls,    # the single shared counter (one source of truth)
         )

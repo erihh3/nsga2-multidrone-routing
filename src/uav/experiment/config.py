@@ -42,14 +42,46 @@ class Hyperparams:
     iters: int = 500
     archive_size: int = 100
     grid_divisions: int = 30
-    # Tuned on eil51-k3 (10-seed union): a small velocity clamp curbs the erratic
-    # jumps that wreck random-key tours, and c2 > c1 leans on the archive leader.
-    # This cut Sigma d from ~1255 (vmax 0.5) to ~610. Standard PSO tuning, confined
-    # to the optimizer loop (the one allowed point of difference) — not a 2-opt
-    # local search on routes (that remains the sanctioned, user-gated fallback).
+    # Diversity/convergence levers (calibrated on eil51-k3, variable fleet, 3 seeds
+    # x parity budget). Under the variable-fleet relaxation MOPSO's tours barely
+    # converged: vmax_frac=0.5 let each argsort key jump half the [0,1] range per
+    # step, so the visit order never settled (energy ~2x NSGA-II; on rat99 the best
+    # energy moved ~3% in 465 iters). Lowering vmax_frac to 0.1 is the dominant fix
+    # (GD 3.05->1.91, best-energy ~8050->6200 on eil51); trimming turbulence to
+    # 0.3/0.05 sharpens it further while the floor still keeps late diversity alive.
+    # NOTE: a separate, structural issue is NOT fixed by these knobs. MOPSO stays
+    # ~3-drone and clearly dominated. The decoder was switched to stars-and-bars
+    # cut-points (decode._counts_from_keys) so c_k=0 IS reachable, but that did not
+    # change the fronts: idle-drone solutions need a near-optimal single tour to be
+    # non-dominated, which random-key MOPSO can't produce, so they stay pruned. The
+    # collapse is downstream of weak tour convergence (see MOPSO_INVESTIGATION.md);
+    # only a memetic local search (2-opt) or a combinatorial PSO would change it,
+    # both out of scope. c2>c1 leans on the archive leader. All confined to the
+    # optimizer loop / decoder (MOPSO's allowed point of difference) — NOT a 2-opt
+    # route local search (user-gated fallback).
     w_inertia: float = 0.4      # inertia weight (Coello 2004: 0.4)
     c1: float = 1.5             # cognitive coefficient (pull to personal best)
     c2: float = 2.0             # social coefficient (pull to archive leader)
-    vmax_frac: float = 0.2      # velocity clamp as a fraction of the [0,1] key range
-    mut_rate: float = 0.5       # initial turbulence fraction; decays to 0 over iters
+    vmax_frac: float = 0.1      # velocity clamp as a fraction of the [0,1] key range
+    mut_rate: float = 0.3       # initial turbulence fraction
+    mut_floor: float = 0.05     # turbulence never decays below this (keeps late
+    #                             diversity alive; per Coello 2004 mutation persists)
     extra: dict = field(default_factory=dict)
+
+
+def parity_iters(measured_nsga2_mean: float, swarm: int) -> int:
+    """MOPSO ``iters`` that matches NSGA-II's *measured* mean evaluation count.
+
+    Budget parity is on MEASURED evals, not the nominal ``pop*gens``. NSGA-II
+    under-evaluates (untouched offspring keep their parent's fitness, so only
+    invalid offspring are re-evaluated), measuring ~46.6k/run on eil51-k3. MOPSO
+    re-evaluates the *whole* swarm every iteration plus the initial swarm, so its
+    measured count is exactly ``swarm * (iters + 1)``. Solving that for ``iters``:
+
+        iters = round(measured_nsga2_mean / swarm) - 1
+
+    **Co-equality guard:** this can only bring MOPSO's nominal 50,100
+    (swarm=100, iters=500) *down* to ~46.5k to meet NSGA-II — it must never be used
+    to inflate NSGA-II's budget upward to flatter the comparison.
+    """
+    return max(1, round(measured_nsga2_mean / swarm) - 1)

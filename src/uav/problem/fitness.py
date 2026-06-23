@@ -57,3 +57,48 @@ def evaluate(
     makespan = max(per_drone_d) / v_cruise
     energy = (alpha * mass + beta) / v_cruise * sum(per_drone_d)
     return makespan, energy
+
+
+class CountingEvaluator:
+    """The single shared eval counter both optimizers route through.
+
+    A thin callable over the one ``evaluate()`` that tallies how many times it is
+    invoked. NSGA-II and MOPSO each build *one* instance per ``run()`` and call it
+    in place of ``evaluate(routes, dist)``; ``n_calls`` is then the run's measured
+    evaluation count.
+
+    Why this exists (CLAUDE.md invariant): fitness must be counted in exactly one
+    place. Before this, each optimizer kept its own ad-hoc tally (NSGA-II added
+    ``len(invalid)`` per generation, MOPSO did ``n_evals += 1`` in the loop). Two
+    hand-maintained counters are two chances to count differently and silently
+    break the *measured* budget parity the comparison rests on. One wrapper, one
+    counter, no counting inside the optimizer loops.
+
+    The wrapper owns no objective or distance logic — it forwards verbatim to the
+    shared ``evaluate()`` — so it cannot become an algorithm-specific fitness.
+    """
+
+    def __init__(
+        self,
+        dist: np.ndarray,
+        alpha: float = ALPHA,
+        beta: float = BETA,
+        mass: float = MASS,
+        v_cruise: float = V_CRUISE,
+    ) -> None:
+        self.dist = dist
+        self.alpha = alpha
+        self.beta = beta
+        self.mass = mass
+        self.v_cruise = v_cruise
+        self.n_calls = 0
+
+    def __call__(self, routes: list[list[int]]) -> tuple[float, float]:
+        self.n_calls += 1
+        return evaluate(
+            routes, self.dist, self.alpha, self.beta, self.mass, self.v_cruise
+        )
+
+    def reset(self) -> None:
+        """Zero the counter (e.g. to reuse one evaluator across calibration runs)."""
+        self.n_calls = 0

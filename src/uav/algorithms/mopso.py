@@ -18,9 +18,16 @@ exactly as NSGA-II's selNSGA2 carries its own domination/crowding.
 Design decisions (Coello Coello, Pulido & Lechuga 2004, "Handling multiple
 objectives with PSO", IEEE TEVC — unverified DOI):
 - Positions live in the [0,1]^(N+K) random-key box. Velocity is clamped to a
-  fraction of that range; on a boundary violation the position is clamped and the
-  offending velocity component flipped (reflective bound) so particles search
-  inward instead of piling on the walls.
+  fraction of that range (`vmax_frac`); on a boundary violation the position is
+  clamped and the offending velocity component flipped (reflective bound) so
+  particles search inward instead of piling on the walls. Positions are therefore
+  bounded by construction (verified: <2.5% of keys ever pin to a boundary, velocity
+  never explodes) — degeneracy here is never a velocity/bounds bug.
+- Diversity is the real risk. `vmax_frac` is the dominant lever: too small
+  (e.g. 0.2) and every seed converges to the *same* tiny region, giving a
+  degenerate 1-2 point union (spacing() = NaN); 0.5 restores a measurable ~6-point
+  union. The turbulence fraction is also floored (see `_turbulence_fraction`) so
+  late-stage diversity does not die.
 - Leader (global guide) per particle is drawn from the external archive via the
   adaptive grid: cells are scored 10/|cell| so sparse regions are favoured, which
   spreads the swarm along the front rather than collapsing onto one knee.
@@ -29,17 +36,23 @@ objectives with PSO", IEEE TEVC — unverified DOI):
   ~1% in absolute terms, but dividing the archive's own range keeps makespan from
   being the sole driver of the grid — diversity is measured on both axes.
 - Turbulence (diversity kick) resets a random subset of a particle's keys; the
-  fraction of the swarm it touches decays linearly to 0 over the run, so the
-  search explores early and exploits late.
+  fraction of the swarm it touches decays linearly toward 0 but is floored at
+  `mut_floor`, so the search explores early, exploits late, yet never loses the
+  diversity needed to spread along the front.
 
 HIGHEST RISK module. Pre-committed fallback (the *only* sanctioned rescue): if the
 front is poor after focused debugging, bolt 2-opt local search onto decoded routes
 and report honestly as "MOPSO + 2-opt". That raises a co-equality question, so it
 is *not* improvised here — it must be raised with the user first.
 
-NOTE (scope): the shared CountingEvaluator wrapper and measured budget parity vs
-NSGA-II (~46.5k evals, not the nominal swarm*iters) are deferred to the start of
-Phase 4. Here MOPSO tallies n_evals locally, exactly as NSGA-II currently does.
+Eval counting (Phase 4): n_evals is now tallied through the shared
+``CountingEvaluator`` (problem/fitness.py) — the same wrapper class NSGA-II uses —
+so both arms count identically and the count is never maintained inside the loop.
+MOPSO re-evaluates the whole swarm every iteration, so its measured count is the
+deterministic ``swarm * (iters + 1)``. Measured budget parity vs NSGA-II is applied
+at the experiment level by setting ``iters`` from NSGA-II's measured mean (see
+``experiment/config.parity_iters``), bringing MOPSO *down* to ~46.5k — never
+inflating NSGA-II.
 """
 
 from __future__ import annotations
@@ -51,7 +64,7 @@ import numpy as np
 
 from uav.algorithms.base import GenStats, Optimizer, RunResult
 from uav.problem.decode import decode_random_key
-from uav.problem.fitness import evaluate
+from uav.problem.fitness import CountingEvaluator
 from uav.seeds import set_all_seeds
 from uav.solution import Solution
 
@@ -140,6 +153,18 @@ def _truncate(archive: list, max_size: int, divisions: int) -> list:
     return archive
 
 
+def _turbulence_fraction(t: int, iters: int, mut_rate: float, mut_floor: float) -> float:
+    """Fraction of the swarm to mutate at iteration ``t``.
+
+    Linear decay from ``mut_rate`` toward 0, but **floored** at ``mut_floor`` so
+    the turbulence operator never dies. An earlier version decayed to exactly 0,
+    which killed late-stage diversity: the swarm converged onto one region and the
+    archive collapsed to 1-2 points (degenerate, unmeasurable). Per Coello Coello
+    2004 the mutation operator stays active throughout the run.
+    """
+    return max(mut_floor, mut_rate * (1.0 - t / iters))
+
+
 def _turbulence(pos: np.ndarray) -> None:
     """In-place diversity kick: reset a random ~10% of the keys to U(0,1)."""
     d = pos.shape[0]
@@ -182,7 +207,11 @@ class MOPSO(Optimizer):
         swarm, iters = hp.swarm, hp.iters
         vmax = hp.vmax_frac                        # key range is 1.0, so vmax = frac
         t0 = time.perf_counter()
-        n_evals = 0
+
+        # The single shared eval counter (CLAUDE.md invariant): the same wrapper
+        # class NSGA-II uses. Every decode->evaluate flows through it, so n_evals
+        # is the *measured* count with no second tally inside the loop.
+        ev = CountingEvaluator(dist)
 
         # --- init swarm: positions in the [0,1] random-key box, zero velocity ---
         pos = np.random.uniform(0.0, 1.0, size=(swarm, dim))
@@ -192,8 +221,7 @@ class MOPSO(Optimizer):
         members: list = []
         for i in range(swarm):
             routes = decode_random_key(pos[i], n, k, depot)
-            objs = evaluate(routes, dist)
-            n_evals += 1
+            objs = ev(routes)
             swarm_objs.append(objs)
             members.append((pos[i].copy(), objs, routes))
 
@@ -204,7 +232,7 @@ class MOPSO(Optimizer):
 
         # --- main loop ---------------------------------------------------------
         for t in range(1, iters + 1):
-            mut_frac = hp.mut_rate * (1.0 - t / iters)     # decays to 0
+            mut_frac = _turbulence_fraction(t, iters, hp.mut_rate, hp.mut_floor)
             groups, probs = _leader_sampler(archive, hp.grid_divisions)
 
             for i in range(swarm):
@@ -230,8 +258,7 @@ class MOPSO(Optimizer):
             new_members = []
             for i in range(swarm):
                 routes = decode_random_key(pos[i], n, k, depot)
-                objs = evaluate(routes, dist)
-                n_evals += 1
+                objs = ev(routes)
                 swarm_objs.append(objs)
                 new_members.append((pos[i].copy(), objs, routes))
                 if _dominates(objs, pbest_objs[i]):
@@ -257,5 +284,5 @@ class MOPSO(Optimizer):
             final_front=final_front,
             history=history,
             wall_clock_s=wall,
-            n_evals=n_evals,
+            n_evals=ev.n_calls,    # the single shared counter (one source of truth)
         )

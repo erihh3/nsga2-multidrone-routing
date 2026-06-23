@@ -21,6 +21,7 @@ from uav.algorithms.mopso import (
     _leader_sampler,
     _nondominated,
     _truncate,
+    _turbulence_fraction,
 )
 from uav.experiment.config import Budget, Hyperparams
 from uav.problem.instance import load_instance
@@ -79,6 +80,22 @@ def test_leader_selection_returns_archive_member():
         assert any(leader is m for m in archive)       # identity (positions are arrays)
 
 
+def test_turbulence_fraction_respects_floor():
+    iters, rate, floor = 500, 0.5, 0.1
+    # Early: above the floor and near the initial rate.
+    assert _turbulence_fraction(1, iters, rate, floor) > floor
+    assert _turbulence_fraction(1, iters, rate, floor) <= rate
+    # At the end: pinned at the floor, never 0 (which would kill late diversity).
+    assert _turbulence_fraction(iters, iters, rate, floor) == floor
+    # Monotone non-increasing, never below the floor.
+    prev = 1.0
+    for t in range(0, iters + 1):
+        f = _turbulence_fraction(t, iters, rate, floor)
+        assert f >= floor
+        assert f <= prev + 1e-12
+        prev = f
+
+
 def test_truncate_respects_capacity():
     set_all_seeds(1)
     archive = [(np.random.random(3), (float(i), float(100 - i)), None)
@@ -103,7 +120,7 @@ def test_decoded_swarm_is_feasible():
         pois = sorted(p for r in routes for p in r if p != depot)
         assert pois == list(range(1, n + 1))           # every POI exactly once
         assert all(r[0] == depot and r[-1] == depot for r in routes)
-        assert all(len(r) >= 3 for r in routes)        # >=1 POI per drone
+        assert all(len(r) >= 2 for r in routes)        # >=0 POIs (empty allowed)
 
 
 # --- integration run ------------------------------------------------------------
@@ -137,7 +154,8 @@ def test_reduced_budget_run_is_feasible_and_nondominated():
         pois = sorted(p for r in s.routes for p in r if p != inst.depot)
         assert pois == list(range(1, n + 1))
         assert all(r[0] == inst.depot and r[-1] == inst.depot for r in s.routes)
-        assert all(len(r) >= 3 for r in s.routes)
+        assert all(len(r) >= 2 for r in s.routes)     # empty route = [depot, depot]
+        assert 1 <= s.n_active_drones <= inst.k
         assert np.isfinite(s.makespan) and s.makespan > 0
         assert np.isfinite(s.energy) and s.energy > 0
 
