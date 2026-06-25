@@ -13,6 +13,8 @@ dist/
 
 results/*
 !results/.gitkeep
+results_2x/*
+!results_2x/.gitkeep
 figures/*
 !figures/.gitkeep
 

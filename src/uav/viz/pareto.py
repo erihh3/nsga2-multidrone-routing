@@ -4,7 +4,7 @@ Co-equality: this renders any number of arms identically — it never branches o
 *which* algorithm produced a front. An arm contributes only a label and a marker
 shape; the *color* encodes the variable-fleet metadata (number of active drones),
 which is the headline story (NSGA-II spreads across fleet sizes 1/2/3; MOPSO
-collapses to 3). Points are pooled across the 10 seeds by the caller and reduced
+collapses to 3). Points are pooled across all seeds by the caller and reduced
 here to the union non-dominated front (never a single seed).
 """
 
@@ -100,7 +100,7 @@ def plot_pareto(records_by_algo, ax=None, *, title=None):
                       fontsize=8, title_fontsize=8)
     ax.add_artist(first)
     if fleet_handles:
-        ax.legend(handles=fleet_handles, title="active drones", loc="lower left",
+        ax.legend(handles=fleet_handles, title="active drones", loc="upper left",
                   fontsize=8, title_fontsize=8)
 
     # The thin-energy axis is a real structural fact — annotate it so a reader does

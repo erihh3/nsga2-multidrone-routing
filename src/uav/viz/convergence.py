@@ -2,7 +2,7 @@
 (single-run curves are noise). Phase 6.
 
 Two stacked panels (makespan on top, energy below). For each arm and objective we
-stack the 10 per-seed curves and plot the seed-**median** with a shaded 25-75%
+stack the per-seed curves and plot the seed-**median** with a shaded 25-75%
 IQR band — never a single seed (CLAUDE.md). Co-equality: both arms go through the
 identical code; an arm contributes only a label/color. The two arms may have
 different curve lengths (NSGA-II runs `gens`; MOPSO runs its measured-parity
@@ -71,5 +71,8 @@ def plot_convergence(histories_by_algo, axes=None):
         ax.grid(True, alpha=0.25)
     axes[-1].set_xlabel("generation / iteration")
     axes[0].legend(fontsize=8, ncol=2)
-    axes[0].set_title("Convergence (seed-median, shaded IQR over 10 seeds)")
+    # Derive the seed count from the data so the label never goes stale on a
+    # seed-count change (it read a hardcoded "10" through the n=30 rerun).
+    n_seeds = max((len(h) for h in histories_by_algo.values()), default=0)
+    axes[0].set_title(f"Convergence (seed-median, shaded IQR over {n_seeds} seeds)")
     return axes
