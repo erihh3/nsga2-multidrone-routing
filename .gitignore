@@ -11,12 +11,17 @@ build/
 dist/
 .pytest_cache/
 
+results_cobudget/*
+scripts/tmp_results/*
+tmp_results/*
+
 results/*
 !results/.gitkeep
 results_2x/*
 !results_2x/.gitkeep
 figures/*
 !figures/.gitkeep
+
 
 instances/*
 !instances/.gitkeep
