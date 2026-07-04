@@ -19,6 +19,7 @@ Usage:  .venv/bin/python scripts/holm_correction.py
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 
@@ -94,6 +95,13 @@ def flips_vs_raw(raw, fam) -> list[tuple[str, str]]:
 
 
 def main() -> None:
+    global RESULTS
+    ap = argparse.ArgumentParser(
+        description="Holm correction over existing per-test p-values (read-only).")
+    ap.add_argument("--results-dir", default=RESULTS,
+                    help="dir holding <inst>_metrics.json (default: results/)")
+    args = ap.parse_args()
+    RESULTS = os.path.abspath(args.results_dir)
     pv = load_pvalues()
     raw = reject_raw(pv)
     families = {
@@ -106,7 +114,7 @@ def main() -> None:
     out.append("# Holm correction — Phase A results (read-only, n=30, "
                f"alpha={ALPHA})")
     out.append("")
-    out.append("Recomputed from `results/<instance>_metrics.json` "
+    out.append(f"Recomputed from `{os.path.relpath(RESULTS, ROOT)}/<instance>_metrics.json` "
                "(`summary[metric]['p']`). No results/paper files were modified.")
     out.append("")
 

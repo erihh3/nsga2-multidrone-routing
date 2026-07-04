@@ -17,6 +17,10 @@ results_2x/*
 !results_2x/.gitkeep
 figures/*
 !figures/.gitkeep
-
+# README hero animations must be committed so GitHub can render them
+!figures/*_animation.gif
+results_cobudget/*
+tmp_figures/*
+tmp_results/*
 instances/*
 !instances/.gitkeep

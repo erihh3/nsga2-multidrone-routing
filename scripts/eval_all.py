@@ -1,8 +1,9 @@
-"""Aggregate saved fronts into metric tables for the non-eil51 instances.
+"""Aggregate saved fronts into per-instance metric tables (reads disk only).
 
-The Phase-5 sweep persisted per-seed run JSONs for all four instances, but only
-eil51-k3 was aggregated to a ``*_metrics.json`` (by ``scripts/eval_eil51.py``).
-This script produces the three missing summaries: berlin52-k3, eil76-k3, rat99-k3.
+The sweep persisted per-seed run JSONs for all four instances. This script
+aggregates any/all of them to ``<results-dir>/{instance}_metrics.json``. Pass
+``--results-dir`` to choose the source/target dir (e.g. ``results_cobudget`` for
+the 6x-budget run); it defaults to ``results/``.
 
 It RE-RUNS NOTHING. It reads ``results/{instance}_{algo}_{seed}.json`` (the
 fronts, routes, wall-clock and measured ``n_evals`` already on disk), rebuilds
@@ -10,15 +11,16 @@ fronts, routes, wall-clock and measured ``n_evals`` already on disk), rebuilds
 every reported number is reproducible from disk and identical in pipeline to the
 eil51 table. Figures and optimizer runs are untouched.
 
-Usage:  .venv/bin/python scripts/eval_all.py              # all three
-        .venv/bin/python scripts/eval_all.py rat99-k3     # one instance
+Usage:  .venv/bin/python scripts/eval_all.py                                 # all four, results/
+        .venv/bin/python scripts/eval_all.py --results-dir results_cobudget  # all four, 6x-budget
+        .venv/bin/python scripts/eval_all.py rat99-k3                        # one instance
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
-import sys
 
 import numpy as np
 
@@ -28,7 +30,7 @@ from uav.solution import Solution
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 RESULTS = os.path.join(ROOT, "results")
-INSTANCES = ("berlin52-k3", "eil76-k3", "rat99-k3")
+INSTANCES = ("eil51-k3", "berlin52-k3", "eil76-k3", "rat99-k3")
 ALGOS = ("nsga2", "mopso")
 
 # Reporting direction per metric: True = higher is better (mirrors eval_eil51.py).
@@ -116,8 +118,16 @@ def evaluate_instance(instance: str) -> None:
 
 
 def main() -> None:
-    targets = sys.argv[1:] or list(INSTANCES)
-    for instance in targets:
+    global RESULTS
+    ap = argparse.ArgumentParser(
+        description="Aggregate saved fronts into per-instance metric tables (reads disk only).")
+    ap.add_argument("instances", nargs="*", default=list(INSTANCES),
+                    help="instance names (default: all four)")
+    ap.add_argument("--results-dir", default=RESULTS,
+                    help="dir to read raw runs from and write <inst>_metrics.json to (default: results/)")
+    args = ap.parse_args()
+    RESULTS = os.path.abspath(args.results_dir)
+    for instance in args.instances:
         evaluate_instance(instance)
 
 

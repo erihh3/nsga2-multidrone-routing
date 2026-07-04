@@ -179,7 +179,10 @@ def render_one(routes_json: str, index: int, selection: str) -> None:
 # --- CLI ------------------------------------------------------------------------
 
 def main(argv=None) -> int:
+    global RESULTS
     p = argparse.ArgumentParser(description="Render Phase-6 figures from results/ JSONs.")
+    p.add_argument("--results-dir", default=RESULTS,
+                   help="dir to read raw run JSONs from (default: results/)")
     p.add_argument("--instances", nargs="*", default=list(INSTANCES),
                    help="instance name(s) (default: all four)")
     p.add_argument("--selection", default="knee",
@@ -194,6 +197,7 @@ def main(argv=None) -> int:
     p.add_argument("--index", type=int, default=0,
                    help="front index within --routes-json (default 0)")
     args = p.parse_args(argv)
+    RESULTS = os.path.abspath(args.results_dir)
 
     if args.routes_json:                       # presentation interface
         render_one(args.routes_json, args.index, args.selection)
