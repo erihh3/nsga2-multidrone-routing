@@ -71,7 +71,7 @@ comparison isolates exactly one variable: the optimizer loop and its genotype.
 [`uv`](https://github.com/astral-sh/uv). All runtime dependencies (`numpy`, `scipy`,
 `matplotlib`, `seaborn`, `deap`) are pinned in `requirements.txt`.
 
-**1 — Create the environment and install the package (editable):**
+**1 — Create the environment and install the package:**
 
 ```bash
 uv venv --python 3.13 .venv
@@ -80,14 +80,13 @@ uv pip install -r requirements.txt   # pinned runtime deps
 uv pip install -e .                  # install `uav` so `import uav` resolves from src/
 ```
 
-**2 — Provide the benchmark instances.** The Necula & Breaban mTSPLIB `.tsp` files
-are not vendored (git-ignored). Place the four instances in `instances/`:
+**2 — Provide the benchmark instances.** Place the four instances in `instances/`:
 
 ```
 instances/eil51.tsp  instances/berlin52.tsp  instances/eil76.tsp  instances/rat99.tsp
 ```
 
-**3 — Verify the build (hard gate).** The suite includes the hand-calculated fitness
+**3 — Verify the build.** The suite includes the hand-calculated fitness
 check that anchors every downstream number; it must pass before running experiments:
 
 ```bash
@@ -138,33 +137,3 @@ figure is `n=10` (10 fixed seeds per instance×algorithm); never quote a single 
 python -m uav.experiment.runner --instance eil51-k3 --algorithm nsga2   # one cell
 python scripts/make_figures.py --instances rat99-k3 --selection min-makespan
 ```
-
-## Layout
-
-```
-src/uav/
-  seeds.py            # seed setup for random + numpy
-  problem/            # instance loader, decoders, fitness (shared core)
-  algorithms/         # base ABC + nsga2 (DEAP) + mopso (numpy)
-  evaluation/         # metrics, reference front, stats
-  experiment/         # config + 4x2x10 = 80-run harness
-  viz/                # pareto / convergence / routes / animation
-scripts/              # make_figures.py (figure driver) + eval/sanity helpers
-tests/                # one file per core module
-instances/            # mTSPLIB .tsp / .k files (downloaded separately)
-results/              # per-run JSON + log.csv
-figures/              # output PDFs + drone animation
-```
-
-## Build order (phase-gated)
-
-`instance.py` → `decode.py` → `fitness.py` (+ hand-calc test, **hard gate**) →
-`nsga2.py` → `mopso.py` → `metrics`/`reference_front`/`stats` → `runner` → `viz`.
-
-## Status
-
-All code phases complete (Phase 0–6): the shared problem core, both optimizers
-(NSGA-II + MOPSO), the 80-run sweep harness, evaluation/metrics/stats, and the
-visualization layer are implemented and tested — `pytest` green (**106 tests**).
-Per-phase reading guides live in `planning/PHASE*_GUIDE.md`.
-
