@@ -151,3 +151,71 @@ def test_random_key_degenerate_keys_no_nan():
 def test_random_key_wrong_length_rejected():
     with pytest.raises(ValueError):
         decode_random_key(np.zeros(10), n_pois=50, k=3, depot=DEPOT)
+
+
+# --- reviewer's minimal check (R2): every composition at N=5, K=3 ---------------
+# Exhaustive over the 21 compositions of 5 into 3 non-negative parts, so the
+# single-route cases (5,0,0), (0,5,0), (0,0,5) and every empty-route pattern are
+# covered by enumeration rather than by hand-picked examples.
+
+_N5, _K3 = 5, 3
+_PERM5 = [3, 1, 5, 2, 4]
+_COMPOSITIONS_5_3 = [(a, b, _N5 - a - b) for a in range(_N5 + 1) for b in range(_N5 + 1 - a)]
+
+
+def _assert_phenotype(routes, counts):
+    assert len(routes) == _K3
+    assert all(r[0] == DEPOT and r[-1] == DEPOT for r in routes)   # leave and return
+    assert all(DEPOT not in r[1:-1] for r in routes)
+    assert _all_pois(routes) == list(range(1, _N5 + 1))            # each POI once
+    decoded = [len(r) - 2 for r in routes]
+    assert decoded == list(counts)
+    assert min(decoded) >= 0 and sum(decoded) == _N5
+
+
+def _keys_for_order(perm):
+    # Ascending keys in visiting sequence, so argsort recovers ``perm``.
+    keys = np.empty(len(perm))
+    for rank, poi_id in enumerate(perm):
+        keys[poi_id - 1] = rank * 0.1
+    return keys
+
+
+def test_every_composition_is_enumerated():
+    assert len(_COMPOSITIONS_5_3) == 21                             # C(5+2, 2)
+    assert {(5, 0, 0), (0, 5, 0), (0, 0, 5)} <= set(_COMPOSITIONS_5_3)
+
+
+@pytest.mark.parametrize("counts", _COMPOSITIONS_5_3)
+def test_two_part_every_composition(counts):
+    _assert_phenotype(decode_two_part(_PERM5, list(counts), DEPOT), counts)
+
+
+@pytest.mark.parametrize("counts", _COMPOSITIONS_5_3)
+def test_random_key_every_composition(counts):
+    # Cut fractions = cumulative counts / N reach the composition exactly.
+    cuts = [counts[0] / _N5, (counts[0] + counts[1]) / _N5]
+    routes_by_inert = []
+    for inert in (0.0, 1.0):                  # the K-th fleet key must not matter
+        keys = np.concatenate([_keys_for_order(_PERM5), np.array([*cuts, inert])])
+        routes = decode_random_key(keys, _N5, _K3, DEPOT)
+        _assert_phenotype(routes, counts)
+        routes_by_inert.append(routes)
+    assert routes_by_inert[0] == routes_by_inert[1]
+    assert routes_by_inert[0] == decode_two_part(_PERM5, list(counts), DEPOT)
+
+
+def test_random_key_tied_order_keys_keep_index_order():
+    # Clipping piles keys at exactly 0.0 or 1.0, so ties do occur; the stable
+    # argsort breaks them by POI index.
+    keys = np.concatenate([np.full(_N5, 1.0), np.array([0.4, 1.0, 0.0])])  # cuts 2, 5
+    routes = decode_random_key(keys, _N5, _K3, DEPOT)
+    assert routes == [[0, 1, 2, 0], [0, 3, 4, 5, 0], [0, 0]]
+
+
+def test_random_key_cut_rounding_half_to_even():
+    # 0.7*5 = 3.5 -> 4 and 0.5*5 = 2.5 -> 2 (Python's round is half-to-even);
+    # keys given unsorted, cuts are sorted -> [2, 4] -> counts [2, 2, 1].
+    keys = np.concatenate([_keys_for_order(_PERM5), np.array([0.7, 0.5, 0.3])])
+    routes = decode_random_key(keys, _N5, _K3, DEPOT)
+    assert routes == decode_two_part(_PERM5, [2, 2, 1], DEPOT)

@@ -1,0 +1,13 @@
+instance,algorithm,runs,solutions,failures
+eil51-k3,nsga2,30,2967,0
+eil51-k3,mopso,30,105,0
+eil51-k3,dmopso,30,149,0
+berlin52-k3,nsga2,30,3000,0
+berlin52-k3,mopso,30,122,0
+berlin52-k3,dmopso,30,262,0
+eil76-k3,nsga2,30,3000,0
+eil76-k3,mopso,30,91,0
+eil76-k3,dmopso,30,141,0
+rat99-k3,nsga2,30,2912,0
+rat99-k3,mopso,30,141,0
+rat99-k3,dmopso,30,152,0
