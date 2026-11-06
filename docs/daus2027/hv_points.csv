@@ -1,0 +1,13 @@
+instance,method,runs,distinct_points,pooled_distinct,outside_old_box,no_contrib_old,outside_new_box,no_contrib_new,old_hv_zero_runs,new_hv_zero_runs,ref_front_size,ref_share_pct
+eil51-k3,nsga2,30,301,293,119,119,0,0,1,0,9,100.0
+eil51-k3,mopso,30,105,104,105,105,0,0,30,0,9,0.0
+eil51-k3,dmopso,30,149,148,149,149,0,0,30,0,9,0.0
+berlin52-k3,nsga2,30,745,742,127,127,0,0,0,0,43,100.0
+berlin52-k3,mopso,30,122,122,122,122,0,0,30,0,43,0.0
+berlin52-k3,dmopso,30,262,262,262,262,0,0,30,0,43,0.0
+eil76-k3,nsga2,30,330,318,139,139,0,0,4,0,15,100.0
+eil76-k3,mopso,30,91,91,91,91,0,0,30,0,15,0.0
+eil76-k3,dmopso,30,141,141,141,141,0,0,30,0,15,0.0
+rat99-k3,nsga2,30,540,537,143,143,0,0,0,0,33,100.0
+rat99-k3,mopso,30,141,141,141,141,0,0,30,0,33,0.0
+rat99-k3,dmopso,30,152,152,152,152,1,1,30,0,33,0.0

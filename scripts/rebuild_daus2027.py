@@ -21,11 +21,16 @@ import sys
 import numpy as np
 
 from uav.algorithms.nsga2 import NSGA2, _genotype_to_routes
+from uav.evaluation import metrics as M
+from uav.evaluation.aggregate import _front_objs
+from uav.evaluation.reference_front import build_reference_front, normalize, reference_bounds
+from uav.evaluation.stats import median_iqr
 from uav.experiment.config import SEEDS, Budget, Hyperparams
 from uav.problem.decode import decode_random_key
 from uav.problem.fitness import ALPHA, BETA, MASS, V_CRUISE, evaluate
 from uav.problem.instance import load_instance
 from uav.seeds import set_all_seeds
+from uav.solution import Solution
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 INSTANCES = ("eil51-k3", "berlin52-k3", "eil76-k3", "rat99-k3")
@@ -303,7 +308,184 @@ def budget(results_dir: str, out_dir: str) -> bool:
     return ok
 
 
-STEPS = {"check_solutions": check_solutions, "initial_fleet": initial_fleet, "budget": budget}
+# Fixed in prompt 09_C1 before any audited HV was computed, so the reference point is
+# not chosen after seeing which one looks best. The others are the sensitivity check.
+HV_FACTOR = 1.1
+HV_FACTORS = (1.05, 1.1, 1.2, 1.5)
+OLD_REF = np.array([1.1, 1.1])     # the paper's reference point (aggregate.py:98)
+MAIN = ("nsga2", "mopso")
+OBJECTIVES = ("f1_makespan_s", "f2_energy_J")
+
+
+def _load_fronts(results_dir: str, instance: str, algo: str) -> list[list[Solution]]:
+    """The saved final front of every seed, as ``Solution``s (the type metrics consume)."""
+    fronts = []
+    for seed in SEEDS:
+        with open(_run_path(results_dir, instance, algo, seed)) as fh:
+            run = json.load(fh)
+        fronts.append([Solution(routes=tuple(tuple(int(p) for p in r) for r in routes),
+                                makespan=float(f1), energy=float(f2))
+                       for (f1, f2), routes in zip(run["front"], run["routes"])])
+    return fronts
+
+
+def _a12(x, y) -> float:
+    """Vargha-Delaney A12 = P(X > Y) + 0.5 P(X = Y); 0.5 is no effect, 1 is X always larger."""
+    x, y = np.asarray(x, dtype=float)[:, None], np.asarray(y, dtype=float)[None, :]
+    return float(((x > y).sum() + 0.5 * (x == y).sum()) / (x.size * y.size))
+
+
+def _hv_frac(front_norm: np.ndarray, r: np.ndarray) -> float:
+    # The reference front holds the pooled minima (normalized 0), so this lies in [0, 1].
+    return M.hypervolume(front_norm, r) / float(r[0] * r[1])
+
+
+def _inside(front_norm: np.ndarray, r: np.ndarray) -> np.ndarray:
+    # Same strict test metrics.hypervolume applies before it sums anything.
+    return (front_norm[:, 0] < r[0]) & (front_norm[:, 1] < r[1])
+
+
+def _no_contribution(front_norm: np.ndarray, r: np.ndarray) -> int:
+    """Points whose removal leaves the run's HV unchanged (zero exclusive contribution)."""
+    total = M.hypervolume(front_norm, r)
+    return sum(M.hypervolume(np.delete(front_norm, i, axis=0), r) == total
+               for i in range(len(front_norm)))
+
+
+def hv_audit(results_dir: str, out_dir: str) -> bool:
+    """[R4] The reviewer's five-step HV audit, one common reference point, sensitivity.
+
+    Keeps the paper's min-max transformation (so IGD, GD, SM and DM are untouched) and
+    moves only the reference point: ``r = HV_FACTOR x`` the per-objective worst
+    normalized value pooled over NSGA-II and MOPSO, all seeds, common to both. HV is
+    the fraction of the box ``[0, r1] x [0, r2]``. Writes ``hv_bounds.csv``,
+    ``hv_points.csv``, ``hv_per_run.csv`` (the only HV carried forward) and
+    ``hv_sensitivity.csv``. Fails on a broken check, or if the NSGA-II vs MOPSO order
+    flips under any reference point (the prompt's stop rule).
+    """
+    bounds_rows, point_rows, per_run_rows, sens_rows = [], [], [], []
+    failed, flips = [], []
+    for instance in INSTANCES:
+        fronts = {algo: _load_fronts(results_dir, instance, algo) for algo in ALGORITHMS}
+        if any(len(f) != len(SEEDS) for f in fronts.values()):
+            failed.append(f"{instance}: 30 fronts per arm")
+
+        # Steps 1-2. The paper's transformation: min-max over the NSGA-II + MOPSO
+        # reference front. The old three-arm table pooled DMOPSO too; an identical
+        # front means identical bounds, so both old tables used one transformation.
+        ref = build_reference_front(fronts["nsga2"] + fronts["mopso"])
+        ref3 = build_reference_front([f for algo in ALGORITHMS for f in fronts[algo]])
+        if [s.objectives for s in ref] != [s.objectives for s in ref3]:
+            failed.append(f"{instance}: reference front unchanged by DMOPSO")
+        lo, hi = reference_bounds(ref)
+        raw = {algo: [_front_objs(f) for f in fronts[algo]] for algo in ALGORITHMS}
+        norm = {algo: [normalize(o, lo, hi) for o in raw[algo]] for algo in ALGORITHMS}
+        pooled = {algo: np.vstack(norm[algo]) for algo in ALGORITHMS}
+        everything = np.vstack(list(pooled.values()))
+
+        # Step 3. One (lo, hi) for every arm and no clipping: values above 1 survive.
+        if not all(np.array_equal(n, (o - lo) / (hi - lo))
+                   for algo in ALGORITHMS for o, n in zip(raw[algo], norm[algo])):
+            failed.append(f"{instance}: unclipped, same transformation for every arm")
+        if not everything.max() > 1:
+            failed.append(f"{instance}: some normalized value above 1")
+        if everything.min() < 0:
+            failed.append(f"{instance}: normalized values >= 0")
+
+        # The audit must start from the paper's numbers: same bounds, same per-run HV.
+        with open(os.path.join(results_dir, f"{instance}_metrics.json")) as fh:
+            old = json.load(fh)
+        if not (np.array_equal(old["ref_min"], lo) and np.array_equal(old["ref_max"], hi)):
+            failed.append(f"{instance}: old bounds reproduced")
+        old_hv = {algo: [M.hypervolume(n, OLD_REF) for n in norm[algo]] for algo in ALGORITHMS}
+        for algo in MAIN:
+            saved = {row["seed"]: row["hv"] for row in old["per_run"][algo]}
+            if not all(math.isclose(h, saved[s], rel_tol=0.0, abs_tol=1e-12)
+                       for s, h in zip(SEEDS, old_hv[algo])):
+                failed.append(f"{instance}: old HV reproduced ({algo})")
+
+        for j, objective in enumerate(OBJECTIVES):
+            for algo in ALGORITHMS:
+                r_vals = np.concatenate([o[:, j] for o in raw[algo]])
+                n_vals = pooled[algo][:, j]
+                bounds_rows.append({
+                    "instance": instance, "objective": objective, "method": algo,
+                    "lower_bound": float(lo[j]), "upper_bound": float(hi[j]),
+                    "best_raw": float(r_vals.min()), "worst_raw": float(r_vals.max()),
+                    "best_norm": f"{n_vals.min():.4f}", "worst_norm": f"{n_vals.max():.4f}",
+                    "n_values": len(n_vals), "above_1": int((n_vals > 1).sum()),
+                    "above_1_1": int((n_vals > 1.1).sum())})
+
+        # Step 5. Reference points. DMOPSO stays out of the main box: its points reach
+        # further (rat99 f1), which would move the reference of the main comparison.
+        worst2 = np.vstack([pooled["nsga2"], pooled["mopso"]]).max(axis=0)
+        worst3 = everything.max(axis=0)
+        main_r = HV_FACTOR * worst2
+        refs = [("nsga2+mopso", f, f * worst2, MAIN) for f in HV_FACTORS]
+        refs += [("nsga2+mopso+dmopso", HV_FACTOR, HV_FACTOR * worst3, ALGORITHMS),
+                 ("old_1.1x1.1", "", OLD_REF, MAIN)]
+        a12_main = []
+        for box, factor, r, arms in refs:
+            hv = {algo: np.array([_hv_frac(n, r) for n in norm[algo]]) for algo in arms}
+            for algo in arms:
+                med, iqr = median_iqr(hv[algo])
+                sens_rows.append({
+                    "instance": instance, "box": box, "factor": factor,
+                    "r1": f"{r[0]:.4f}", "r2": f"{r[1]:.4f}", "method": algo,
+                    "runs": len(hv[algo]), "hv_median": f"{med:.4f}", "hv_iqr": f"{iqr:.4f}",
+                    "hv_zero_runs": int((hv[algo] == 0).sum()),
+                    "a12_nsga2_vs": "" if algo == "nsga2" else f"{_a12(hv['nsga2'], hv[algo]):.3f}"})
+            a12 = _a12(hv["nsga2"], hv["mopso"])
+            if box == "nsga2+mopso":
+                a12_main.append(a12)
+            if not (np.median(hv["nsga2"]) > np.median(hv["mopso"]) and a12 > 0.5):
+                flips.append(f"{instance} {box} {factor}")
+
+        # Step 4 at the old and the audited reference, plus each arm's reference-front share.
+        hv_main = {algo: [_hv_frac(n, main_r) for n in norm[algo]] for algo in ALGORITHMS}
+        ref_set = {s.objectives for s in ref}
+        for algo in ALGORITHMS:
+            pooled_raw = {tuple(p) for o in raw[algo] for p in o.tolist()}
+            point_rows.append({
+                "instance": instance, "method": algo, "runs": len(norm[algo]),
+                "distinct_points": sum(len(n) for n in norm[algo]),
+                "pooled_distinct": len(pooled_raw),
+                "outside_old_box": sum(int((~_inside(n, OLD_REF)).sum()) for n in norm[algo]),
+                "no_contrib_old": sum(_no_contribution(n, OLD_REF) for n in norm[algo]),
+                "outside_new_box": sum(int((~_inside(n, main_r)).sum()) for n in norm[algo]),
+                "no_contrib_new": sum(_no_contribution(n, main_r) for n in norm[algo]),
+                "old_hv_zero_runs": sum(h == 0 for h in old_hv[algo]),
+                "new_hv_zero_runs": sum(h == 0 for h in hv_main[algo]),
+                "ref_front_size": len(ref),
+                "ref_share_pct": f"{100 * len(ref_set & pooled_raw) / len(ref):.1f}"})
+        for algo in MAIN:
+            for seed, n, h in zip(SEEDS, norm[algo], hv_main[algo]):
+                per_run_rows.append({"instance": instance, "algorithm": algo, "seed": seed,
+                                     "front_distinct": len(n), "ref_f1": float(main_r[0]),
+                                     "ref_f2": float(main_r[1]), "hv": h})
+
+        print(f"  {instance:<12} worst ({worst2[0]:.2f}, {worst2[1]:.2f}) "
+              f"r ({main_r[0]:.2f}, {main_r[1]:.2f})  HV median N "
+              f"{np.median(hv_main['nsga2']):.4f} M {np.median(hv_main['mopso']):.4f}  "
+              f"A12 {min(a12_main):.3f}-{max(a12_main):.3f}  old HV=0 N "
+              f"{point_rows[-3]['old_hv_zero_runs']}/30 M {point_rows[-2]['old_hv_zero_runs']}/30")
+
+    for name, rows in (("hv_bounds", bounds_rows), ("hv_points", point_rows),
+                       ("hv_per_run", per_run_rows), ("hv_sensitivity", sens_rows)):
+        _write_csv(os.path.join(out_dir, f"{name}.csv"), rows)
+
+    for f in failed:
+        print(f"  CHECK FAILED: {f}")
+    if flips:
+        print(f"  ORDER FLIP (stop rule, report to the user): {'; '.join(flips)}")
+    print(f"hv_audit: {len(per_run_rows)} runs, checks {'FAILED' if failed else 'OK'}, "
+          f"order {'FLIPPED' if flips else 'held'} under {len(refs)} references per instance "
+          f"-> {os.path.relpath(out_dir, ROOT)}/hv_{{bounds,points,per_run,sensitivity}}.csv")
+    return not failed and not flips
+
+
+STEPS = {"check_solutions": check_solutions, "initial_fleet": initial_fleet, "budget": budget,
+         "hv_audit": hv_audit}
 
 
 def main() -> None:
