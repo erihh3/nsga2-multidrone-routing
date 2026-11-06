@@ -831,8 +831,174 @@ def tables(results_dir: str, out_dir: str, manuscript_dir: str | None = None) ->
     return not failed
 
 
+FIG_FRONT_INSTANCES = ("eil51-k3", "rat99-k3")
+FIG_CONV_INSTANCE = "eil51-k3"
+FIG_LABELS = {"nsga2": "NSGA-II", "mopso": "MOPSO"}
+CM = 1 / 2.54
+# Printed sizes: the figures are drawn at the size they print at, so font sizes are
+# the printed sizes. Text width 15.93 cm and column width 7.665 cm come from daus.sty.
+FIG1_SIZE = (15.9 * CM, 6.0 * CM)
+FIG2_SIZE = (7.6 * CM, 6.5 * CM)
+# Okabe-Ito vermillion/blue/green: pareto.py's red/green pair for 1 vs 3 drones fails
+# the deutan check (dE 3.9), and fleet size is encoded by colour alone.
+FIG_FLEET_COLORS = {1: "#D55E00", 2: "#0072B2", 3: "#009E73"}
+FIG_RC = {"font.size": 7.5, "axes.labelsize": 8, "xtick.labelsize": 7, "ytick.labelsize": 7,
+          "legend.fontsize": 7.5, "axes.linewidth": 0.6, "xtick.major.width": 0.6,
+          "ytick.major.width": 0.6, "savefig.dpi": 300, "pdf.fonttype": 42}
+FIG_FILES = ("fig1_fronts.pdf", "fig1_fronts.png", "fig2_convergence.pdf", "fig2_convergence.png")
+
+
+def _n_active(routes) -> int:
+    return sum(len(r) > 2 for r in routes)   # an empty route is [depot, depot]
+
+
+def _save_fig(fig, out_dir: str, stem: str) -> None:
+    # CreationDate None keeps the PDF byte-identical across rebuilds.
+    fig.savefig(os.path.join(out_dir, f"{stem}.pdf"), metadata={"CreationDate": None})
+    fig.savefig(os.path.join(out_dir, f"{stem}.png"), dpi=300)
+
+
+def _eval_axis(algo: str, n_gen: int, n_evals: int) -> np.ndarray:
+    """Evaluations spent when ``history[g]`` was recorded.
+
+    MOPSO evaluates the whole swarm every iteration, so it is exact. NSGA-II saves
+    only the run total (reused offspring are not re-evaluated, rate fixed by the
+    operators), so its calls are spread linearly over generations.
+    """
+    g = np.arange(n_gen, dtype=float)
+    if algo == "mopso":
+        return 100.0 * (g + 1)
+    return 100.0 + g * (n_evals - 100) / (n_gen - 1)
+
+
+def _fig1(results_dir: str):
+    import matplotlib.pyplot as plt
+    from matplotlib.legend import Legend
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    from unittest import mock
+    from uav.viz import pareto
+
+    fig, axes = plt.subplots(1, 2, figsize=FIG1_SIZE, layout="constrained")
+    seen = set()
+    for ax, panel, inst in zip(axes, "ab", FIG_FRONT_INSTANCES):
+        records = {}
+        for algo in MAIN:
+            recs = []
+            for seed in SEEDS:
+                with open(_run_path(results_dir, inst, algo, seed)) as fh:
+                    run = json.load(fh)
+                recs += [(f1, f2, _n_active(r)) for (f1, f2), r in zip(run["front"], run["routes"])]
+            records[FIG_LABELS[algo]] = recs
+        with mock.patch.dict(pareto._FLEET_COLORS, FIG_FLEET_COLORS):
+            pareto.plot_pareto(records, ax=ax)
+        # One shared legend replaces plot_pareto's two per-axes legends.
+        for leg in [c for c in ax.get_children() if isinstance(c, Legend)]:
+            leg.remove()
+        # plot_pareto's marker sizes suit a 6-inch axes; shrink them to the panel.
+        clouds = [c for c in ax.collections if c.get_zorder() == 1]   # one per arm, MAIN order
+        clouds[0].set_sizes([3])
+        # plot_pareto greys both arms' clouds alike: rings keep MOPSO's apart (caption).
+        clouds[1].set_sizes([5])
+        clouds[1].set_facecolor("none")
+        clouds[1].set_edgecolor("0.6")
+        clouds[1].set_linewidths(0.3)
+        for coll in ax.collections:
+            if coll.get_zorder() != 1:
+                coll.set_sizes([16])
+                coll.set_linewidths(0.35)
+                seen.update(k for k, c in FIG_FLEET_COLORS.items()
+                            if np.allclose(coll.get_facecolor()[0][:3],
+                                           plt.matplotlib.colors.to_rgb(c)))
+        ax.text(0.97, 0.95, f"({panel}) {inst}", transform=ax.transAxes, ha="right", va="top")
+    handles = [Line2D([], [], marker=pareto._ALGO_MARKERS[i], color="0.3", linestyle="none",
+                      markersize=4.5, label=FIG_LABELS[a]) for i, a in enumerate(MAIN)]
+    handles += [Patch(facecolor=FIG_FLEET_COLORS[k], edgecolor="black", linewidth=0.35,
+                      label=f"{k} active drone{'s' if k > 1 else ''}") for k in sorted(seen)]
+    fig.legend(handles=handles, loc="outside upper center", ncol=len(handles), frameon=False,
+               handlelength=1.2, columnspacing=1.4)
+    return fig
+
+
+def _fig2(results_dir: str) -> tuple[object, list[str]]:
+    """Seed-median running best and IQR against evaluations; also the final-value check."""
+    import matplotlib.pyplot as plt
+    from uav.viz.convergence import _ALGO_COLORS, _OBJECTIVES, _stack
+
+    failed = []
+    grid = 100.0 * np.arange(1, 2792)   # MOPSO's exact evaluation counts
+    fig, axes = plt.subplots(2, 1, figsize=FIG2_SIZE, sharex=True, layout="constrained")
+    for i, algo in enumerate(MAIN):
+        runs, curves = [], []
+        for seed in SEEDS:
+            with open(_run_path(results_dir, FIG_CONV_INSTANCE, algo, seed)) as fh:
+                runs.append(json.load(fh))
+        for seed, run in zip(SEEDS, runs):
+            b = np.column_stack([_stack([run["history"]], "best", obj)[0] for obj in (0, 1)])
+            # history's best is over the population/swarm, not the output set; the
+            # running best is what the method has found so far.
+            rb = np.minimum.accumulate(b, axis=0)
+            front_min = np.min(np.asarray(run["front"], dtype=float), axis=0)
+            if not np.allclose(rb[-1], front_min, rtol=1e-12, atol=0):
+                failed.append(f"{FIG_CONV_INSTANCE} {algo} seed {seed}: running best "
+                              f"{rb[-1].tolist()} != front extreme {front_min.tolist()}")
+            x = _eval_axis(algo, len(b), run["n_evals"])
+            # np.interp holds the end value for seeds that stop short of the grid's end.
+            curves.append(np.column_stack([np.interp(grid, x, rb[:, k]) for k in (0, 1)]))
+        curves = np.stack(curves)   # (seeds, grid, objective)
+        for k, ax in enumerate(axes):
+            q1, med, q3 = np.percentile(curves[:, :, k], [25, 50, 75], axis=0)
+            style = "-" if i == 0 else "--"
+            ax.fill_between(grid, q1, q3, color=_ALGO_COLORS[i], alpha=0.25, linewidth=0)
+            ax.plot(grid, med, style, color=_ALGO_COLORS[i], linewidth=1.0, label=FIG_LABELS[algo])
+    for ax, label in zip(axes, _OBJECTIVES):
+        ax.set_ylabel(label)
+        ax.set_xscale("log")
+        ax.grid(True, which="major", linewidth=0.3, color="0.85")
+    axes[-1].set_xlabel("Function evaluations")
+    axes[0].legend(loc="upper right", frameon=False)
+    return fig, failed
+
+
+def figures(results_dir: str, out_dir: str, manuscript_dir: str | None = None) -> bool:
+    """[T8, Fmt] Fig. 1 (pooled fronts, two instances) and Fig. 2 (convergence vs evaluations).
+
+    Copies the four files to ``figures/`` beside ``manuscript_dir`` when given.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig_dir = os.path.join(out_dir, "figures")
+    os.makedirs(fig_dir, exist_ok=True)
+    with plt.rc_context(FIG_RC):
+        fig = _fig1(results_dir)
+        _save_fig(fig, fig_dir, "fig1_fronts")
+        plt.close(fig)
+        fig, failed = _fig2(results_dir)
+        _save_fig(fig, fig_dir, "fig2_convergence")
+        plt.close(fig)
+
+    if manuscript_dir is None:
+        print("  manuscript copy skipped: --out is not the default")
+    else:
+        dest = os.path.join(os.path.dirname(manuscript_dir), "figures")
+        if not os.path.isdir(dest):
+            print(f"  manuscript copy skipped: {dest} does not exist")
+        else:
+            for name in FIG_FILES:
+                shutil.copyfile(os.path.join(fig_dir, name), os.path.join(dest, name))
+            print(f"  copied {len(FIG_FILES)} files -> {os.path.relpath(dest, ROOT)}")
+    for f in failed:
+        print(f"  CHECK FAILED: {f}")
+    print(f"figures: Fig. 1 {FIG1_SIZE[0] / CM:.1f} x {FIG1_SIZE[1] / CM:.1f} cm, Fig. 2 "
+          f"{FIG2_SIZE[0] / CM:.1f} x {FIG2_SIZE[1] / CM:.1f} cm; running best = front extreme in "
+          f"{2 * len(SEEDS) - len(failed)}/{2 * len(SEEDS)} runs -> {os.path.relpath(fig_dir, ROOT)}")
+    return not failed
+
+
 STEPS = {"check_solutions": check_solutions, "initial_fleet": initial_fleet, "budget": budget,
-         "hv_audit": hv_audit, "stats": stats, "tables": tables}
+         "hv_audit": hv_audit, "stats": stats, "tables": tables, "figures": figures}
 
 
 def main() -> None:
@@ -845,13 +1011,15 @@ def main() -> None:
     ap.add_argument("--manuscript-dir",
                     default=os.path.normpath(os.path.join(ROOT, os.pardir, "peer_review",
                                                           "daus2027", "generated")),
-                    help="where step tables copies its files (only when --out is the default)")
+                    help="where step tables copies its files; figures go to its sibling figures/ "
+                         "(only when --out is the default)")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     # A trial --out must never overwrite the manuscript's copies.
     same_out = os.path.abspath(args.out) == os.path.abspath(default_out)
-    extra = {"tables": {"manuscript_dir": args.manuscript_dir if same_out else None}}
+    copy_to = {"manuscript_dir": args.manuscript_dir if same_out else None}
+    extra = {"tables": copy_to, "figures": copy_to}
     ok = True
     for name in args.only or list(STEPS):
         ok = STEPS[name](args.results_dir, args.out, **extra.get(name, {})) and ok

@@ -102,10 +102,4 @@ def plot_pareto(records_by_algo, ax=None, *, title=None):
     if fleet_handles:
         ax.legend(handles=fleet_handles, title="active drones", loc="upper left",
                   fontsize=8, title_fontsize=8)
-
-    # The thin-energy axis is a real structural fact — annotate it so a reader does
-    # not mistake the short front for poor sampling.
-    ax.annotate("energy axis spans ~1% — trade-off lives in makespan",
-                xy=(0.5, 0.01), xycoords="axes fraction", ha="center",
-                va="bottom", fontsize=7, color="0.4")
     return ax

@@ -399,3 +399,13 @@ A run whose A has one point has NPS = 1. IGD and GD follow the formulas above. H
 - **Effect size and CI, HV only** (`hv_effects.csv`).
   - A₁₂ = U/(n₁n₂) = P(HV_NSGA-II > HV_MOPSO) + ½ P(tie) (Vargha–Delaney).
   - The 95 % CI of the median difference (NSGA-II − MOPSO) is a percentile bootstrap with 10,000 resamples. Each method is resampled independently, with replacement, from one generator whose seed is recorded in the file.
+
+## Figure captions
+
+Reviewer item T8. Drafts for E45; the manuscript is not edited here. Both figures come from rebuild step `figures` (`docs/daus2027/figures/`, copied to `peer_review/daus2027/figures/`), drawn at their printed size: Fig. 1 is 15.9 × 6.0 cm (page width), Fig. 2 is 7.6 × 6.5 cm (one column). PDF plus a 300 dpi PNG; smallest text 7 pt. Neither has an embedded title. The false "energy axis spans ~1 %" note (`pareto.py`) is removed.
+
+**Fig. 1.** Pareto fronts on (a) eil51-k3 and (b) rat99-k3, 30 seeds pooled per method. Large markers: each method's union non-dominated front over all 30 seeds (circles NSGA-II, squares MOPSO), coloured by the number of active drones (1, 2 or 3 of K = 3; a drone is active if its route visits at least one POI). Grey: every point of the 30 per-seed final fronts (dots NSGA-II, rings MOPSO). Axes: makespan f₁ (s) and total energy f₂ (J).
+
+**Fig. 2.** Convergence on eil51-k3: seed-median (line) and interquartile range (band) over 30 seeds of the running best makespan f₁ (s, top) and total energy f₂ (J, bottom), against function evaluations (log scale). The running best is the lowest value of each objective found so far, taken separately per objective. The raw per-generation best is over the population (NSGA-II) or the swarm (MOPSO), not over the output set, and understates MOPSO, whose archive keeps better points than its current swarm (see "What `history` records"). Each curve's final value equals the minimum of that objective over the run's final front, in all 60 runs plotted (checked by the step). MOPSO's evaluation count is exact: 100 × (g + 1) after iteration g. NSGA-II saves only its per-run total `n_evals`, since reused offspring are not re-evaluated, so generation g is placed at 100 + g × (`n_evals` − 100)/3000. Each seed is then interpolated linearly onto MOPSO's grid. NSGA-II's totals on eil51-k3 are 278,636–279,539 (`budget_summary.csv`), so a seed that stops short of 279,100 holds its final value to the end of the grid, and one that runs past it is cut at 279,100.
+
+Caption rule for E45: state the x-axis mapping and the running-best rule in the caption or the Protocol, because the NSGA-II axis is a linear approximation.
