@@ -747,18 +747,22 @@ def _table1(out_dir: str) -> tuple[list[dict], list[str]]:
         ("Population / swarm size", "Population / swarm size", hp_n["pop"], hp_m["swarm"]),
         ("Generations / iterations", "Generations / iterations", hp_n["gens"], hp_m["iters"]),
         (r"Crossover prob.\ $p_c$", "Crossover prob. p_c", hp_n["pcx"], na),
-        ("Mutation prob., order / counts", "Mutation prob., order / counts",
-         f"{hp_n['pmut']} / {hp_n['pmut_counts']}", na),
+        # pmut_counts applies only inside a mutation (effective 0.15), so it gets its own
+        # conditional row rather than reading as a second unconditional rate.
+        (r"Mutation prob.\ $p_m$", "Mutation prob. p_m", hp_n["pmut"], na),
+        ("Count move, given mutation", "Count move, given mutation", hp_n["pmut_counts"], na),
         ("Archive size / grid divisions", "Archive size / grid divisions", na,
          f"{hp_m['archive_size']} / {hp_m['grid_divisions']}"),
         (r"Inertia $w$ / $c_1$ / $c_2$", "Inertia w / c1 / c2", na,
          f"{hp_m['w_inertia']} / {hp_m['c1']} / {hp_m['c2']}"),
         (r"Velocity clamp $v_{\max}$", "Velocity clamp v_max", na, hp_m["vmax_frac"]),
-        ("Turbulence rate", "Turbulence rate", na,
+        # The decaying quantity is a per-particle probability, not a share of keys.
+        ("Turbulence prob.", "Turbulence prob.", na,
          lambda tex: f"{hp_m['mut_rate']} {TO if tex else '->'} {hp_m['mut_floor']}"),
         ("Evaluation slots per run", "Evaluation slots per run",
          lambda tex: _thousands(slots["nsga2"], tex), lambda tex: _thousands(slots["mopso"], tex)),
-        ("Evaluations per run (min--max)", "Evaluations per run (min-max)",
+        # Short enough that the table fits one column at \footnotesize.
+        ("Evaluations per run", "Evaluations per run (min-max)",
          lambda tex: evals("nsga2", tex), lambda tex: evals("mopso", tex)),
         (rf"Max.\ deviation from {_thousands(slots['mopso'], True)}",
          f"Max. deviation from {_thousands(slots['mopso'], False)}",
