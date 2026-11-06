@@ -1,0 +1,16 @@
+parameter,nsga2,mopso,shared
+Population / swarm size,100,100,
+Generations / iterations,3000,2790,
+Crossover prob. p_c,0.9,--,
+"Mutation prob., order / counts",0.3 / 0.5,--,
+Archive size / grid divisions,--,100 / 30,
+Inertia w / c1 / c2,--,0.4 / 1.5 / 2.0,
+Velocity clamp v_max,--,0.1,
+Turbulence rate,--,0.3 -> 0.05,
+Evaluation slots per run,"300,100","279,100",
+Evaluations per run (min-max),"278,636–279,539","279,100",
+"Max. deviation from 279,100",0.166 %,0.000 %,
+"UAV mass m, cruise speed v",,,"2.0 kg, 15.0 m/s"
+"Power alpha, beta; alpha*m + beta",,,"46.7 W/kg, 26.9 W; 120.3 W"
+Fleet size K; seeds,,,3; 0-29
+Instances (N POIs),,,"eil51 (50), berlin52 (51), eil76 (75), rat99 (98)"

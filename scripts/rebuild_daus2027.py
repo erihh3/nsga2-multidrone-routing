@@ -6,6 +6,7 @@ Inputs are read-only: ``results_cobudget/`` is git-ignored and not recoverable.
 
     PYTHONPATH=src python scripts/rebuild_daus2027.py [--only STEP ...]
         [--results-dir results_cobudget] [--out docs/daus2027]
+        [--manuscript-dir ../peer_review/daus2027/generated]
 """
 
 from __future__ import annotations
@@ -16,15 +17,18 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import sys
 
 import numpy as np
+from scipy.stats import mannwhitneyu
 
 from uav.algorithms.nsga2 import NSGA2, _genotype_to_routes
 from uav.evaluation import metrics as M
-from uav.evaluation.aggregate import _front_objs
+from uav.evaluation.aggregate import Run, _front_objs, aggregate
 from uav.evaluation.reference_front import build_reference_front, normalize, reference_bounds
-from uav.evaluation.stats import median_iqr
+# Renamed: fitness.ALPHA (the UAV power coefficient) is imported below under the same name.
+from uav.evaluation.stats import ALPHA as TEST_ALPHA, holm, mann_whitney, median_iqr
 from uav.experiment.config import SEEDS, Budget, Hyperparams
 from uav.problem.decode import decode_random_key
 from uav.problem.fitness import ALPHA, BETA, MASS, V_CRUISE, evaluate
@@ -317,16 +321,23 @@ MAIN = ("nsga2", "mopso")
 OBJECTIVES = ("f1_makespan_s", "f2_energy_J")
 
 
-def _load_fronts(results_dir: str, instance: str, algo: str) -> list[list[Solution]]:
-    """The saved final front of every seed, as ``Solution``s (the type metrics consume)."""
-    fronts = []
+def _load_runs(results_dir: str, instance: str, algo: str) -> list[Run]:
+    """Every seed's saved run as the ``Run`` record ``aggregate`` consumes (one read per JSON)."""
+    runs = []
     for seed in SEEDS:
         with open(_run_path(results_dir, instance, algo, seed)) as fh:
             run = json.load(fh)
-        fronts.append([Solution(routes=tuple(tuple(int(p) for p in r) for r in routes),
-                                makespan=float(f1), energy=float(f2))
-                       for (f1, f2), routes in zip(run["front"], run["routes"])])
-    return fronts
+        front = [Solution(routes=tuple(tuple(int(p) for p in r) for r in routes),
+                          makespan=float(f1), energy=float(f2))
+                 for (f1, f2), routes in zip(run["front"], run["routes"])]
+        runs.append(Run(seed=seed, front=front, wall_clock_s=run["wall_clock_s"],
+                        n_evals=run["n_evals"]))
+    return runs
+
+
+def _load_fronts(results_dir: str, instance: str, algo: str) -> list[list[Solution]]:
+    """The saved final front of every seed, as ``Solution``s (the type metrics consume)."""
+    return [r.front for r in _load_runs(results_dir, instance, algo)]
 
 
 def _a12(x, y) -> float:
@@ -484,8 +495,344 @@ def hv_audit(results_dir: str, out_dir: str) -> bool:
     return not failed and not flips
 
 
+# The paper's Holm family, fixed before any audited p-value was seen: the 7 metrics of
+# its Table III on the 4 instances (28 tests). n_evals is a budget check, not an outcome.
+FAMILY = ("nps", "spacing", "gd", "igd", "dm", "hv", "ct")
+# Fixed before any CI was computed and written into hv_effects.csv, so the CI can be redrawn.
+BOOTSTRAP_SEED = 2027
+BOOTSTRAP_RESAMPLES = 10_000
+LABEL = {"nsga2": "NSGA-II", "mopso": "MOPSO", "dmopso": "DMOPSO"}
+
+
+def _read_csv(path: str) -> list[dict]:
+    with open(path, newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def _audited_hv(out_dir: str) -> dict[tuple[str, str], dict[int, float]]:
+    """``{(instance, algorithm): {seed: hv}}`` from ``hv_per_run.csv``, the only HV carried forward."""
+    hv: dict[tuple[str, str], dict[int, float]] = {}
+    for r in _read_csv(os.path.join(out_dir, "hv_per_run.csv")):
+        hv.setdefault((r["instance"], r["algorithm"]), {})[int(r["seed"])] = float(r["hv"])
+    return hv
+
+
+def stats(results_dir: str, out_dir: str) -> bool:
+    """[R6, R5] The 28 tests with Holm, the HV effect size and CI, fleet, NPS, best energy.
+
+    Per instance, ``aggregate`` recomputes the paper's metrics exactly as before (same
+    reference front, normalization and code); only HV is replaced by the audited value
+    from ``hv_per_run.csv`` (run ``hv_audit`` first). Holm runs once over all 28 raw
+    p-values. Writes ``stats_28tests.csv``, ``hv_effects.csv``, ``fleet_coverage.csv``,
+    ``nps_by_instance.csv`` and ``best_energy.csv``. Fails if a non-HV raw p-value or U
+    differs from the saved ``<instance>_metrics.json`` (the pipeline must be unchanged).
+    """
+    audited = _audited_hv(out_dir)
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    tests, effects, fleet, nps_rows, energy = [], [], [], [], []
+    failed, mismatches = [], []
+    sizes_all = {algo: [] for algo in ALGORITHMS}
+    nps_all = {algo: [] for algo in MAIN}
+    for instance in INSTANCES:
+        runs = {algo: _load_runs(results_dir, instance, algo) for algo in ALGORITHMS}
+        per_run = aggregate({algo: runs[algo] for algo in MAIN})["per_run"]
+        for algo in MAIN:
+            hv = audited.get((instance, algo), {})
+            if sorted(hv) != list(SEEDS) or [row["seed"] for row in per_run[algo]] != list(SEEDS):
+                failed.append(f"{instance}: audited HV for seeds 0-29 ({algo})")
+                continue
+            for row in per_run[algo]:
+                row["hv"] = hv[row["seed"]]
+
+        with open(os.path.join(results_dir, f"{instance}_metrics.json")) as fh:
+            saved = json.load(fh)["summary"]
+        for metric in FAMILY:
+            x = np.array([row[metric] for row in per_run["nsga2"]], dtype=float)
+            y = np.array([row[metric] for row in per_run["mopso"]], dtype=float)
+            # NSGA-II first, so U counts NSGA-II wins (+ half the ties).
+            u, p = mann_whitney(x, y)
+            x, y = x[~np.isnan(x)], y[~np.isnan(y)]
+            # Which branch SciPy's "auto" took, checked rather than assumed.
+            p_asym = float(mannwhitneyu(x, y, alternative="two-sided", method="asymptotic").pvalue)
+            if metric != "hv" and not (math.isclose(p, saved[metric]["p"], rel_tol=1e-12)
+                                       and math.isclose(u, saved[metric]["U"], rel_tol=1e-12)):
+                mismatches.append(f"{instance} {metric}")
+            (mx, ix), (my, iy) = median_iqr(x), median_iqr(y)
+            tests.append({"instance": instance, "metric": metric,
+                          "n_nsga2": x.size, "n_mopso": y.size,
+                          "median_nsga2": mx, "iqr_nsga2": ix, "median_mopso": my, "iqr_mopso": iy,
+                          "U_nsga2": u, "p_raw": p, "p_holm": None, "reject_holm": None,
+                          "method": "asymptotic" if p == p_asym else "exact"})
+            if metric != "hv":
+                continue
+            a12 = u / (x.size * y.size)
+            if not math.isclose(a12, _a12(x, y), rel_tol=0.0, abs_tol=1e-12):
+                failed.append(f"{instance}: A12 = U/(n1 n2)")
+            if not (mx > my and a12 > 0.5):
+                failed.append(f"{instance}: HV order NSGA-II > MOPSO")
+            # Each arm resampled on its own: the seeds create no pairing.
+            bx = np.median(x[rng.integers(0, x.size, size=(BOOTSTRAP_RESAMPLES, x.size))], axis=1)
+            by = np.median(y[rng.integers(0, y.size, size=(BOOTSTRAP_RESAMPLES, y.size))], axis=1)
+            ci_low, ci_high = np.percentile(bx - by, [2.5, 97.5])
+            effects.append({"instance": instance, "n_nsga2": x.size, "n_mopso": y.size,
+                            "hv_median_nsga2": mx, "hv_median_mopso": my, "median_diff": mx - my,
+                            "U_nsga2": u, "A12": a12, "ci_low": float(ci_low),
+                            "ci_high": float(ci_high), "ci_level": 0.95,
+                            "resamples": BOOTSTRAP_RESAMPLES, "bootstrap_seed": BOOTSTRAP_SEED,
+                            "ci_method": "percentile bootstrap of median(NSGA-II) - median(MOPSO); "
+                                         "each arm resampled independently with replacement"})
+
+        for algo in ALGORITHMS:
+            # A drone is active iff its route visits a POI (len > 2): Solution.n_active_drones.
+            sizes = [{s.n_active_drones for s in r.front} for r in runs[algo]]
+            sizes_all[algo] += sizes
+            fleet.append({"instance": instance, "algorithm": algo, "runs": len(sizes),
+                          **{f"reach_{m}": sum(m in z for z in sizes) for m in (1, 2, 3)},
+                          "only_3": sum(z == {3} for z in sizes)})
+            best = np.array([min(s.energy for s in r.front) for r in runs[algo]])
+            med, iqr = median_iqr(best)
+            energy.append({"instance": instance, "algorithm": algo, "runs": len(best),
+                           "best_f2_median_J": med, "best_f2_iqr_J": iqr})
+        for algo in MAIN:
+            nps = np.array([row["nps"] for row in per_run[algo]], dtype=int)
+            nps_all[algo].append(nps)
+            med, iqr = median_iqr(nps)
+            nps_rows.append({"instance": instance, "algorithm": algo, "runs": nps.size,
+                             "nps_median": med, "nps_iqr": iqr,
+                             "nps_min": int(nps.min()), "nps_max": int(nps.max()),
+                             "runs_1_point": int((nps == 1).sum()),
+                             "runs_lt_3_points": int((nps < 3).sum())})
+
+    # Totals over the four instances, for counts such as "119 of 120 runs".
+    for algo in ALGORITHMS:
+        z = sizes_all[algo]
+        fleet.append({"instance": "all", "algorithm": algo, "runs": len(z),
+                      **{f"reach_{m}": sum(m in s for s in z) for m in (1, 2, 3)},
+                      "only_3": sum(s == {3} for s in z)})
+    for algo in MAIN:
+        nps = np.concatenate(nps_all[algo])
+        # No pooled median: the instances differ in size, so only counts are summed.
+        nps_rows.append({"instance": "all", "algorithm": algo, "runs": nps.size,
+                         "nps_median": "", "nps_iqr": "",
+                         "nps_min": int(nps.min()), "nps_max": int(nps.max()),
+                         "runs_1_point": int((nps == 1).sum()),
+                         "runs_lt_3_points": int((nps < 3).sum())})
+
+    p_raw = [t["p_raw"] for t in tests]
+    if len(p_raw) != len(INSTANCES) * len(FAMILY) or not all(math.isfinite(p) for p in p_raw):
+        failed.append("28 finite raw p-values")
+    else:
+        reject, adjusted = holm(p_raw, TEST_ALPHA)
+        for t, rej, adj in zip(tests, reject, adjusted):
+            t["p_holm"], t["reject_holm"] = adj, rej
+            t["method"] = (f"Mann-Whitney U two-sided, SciPy auto -> {t['method']}; "
+                           f"Holm over m={len(tests)}, alpha={TEST_ALPHA}")
+
+    for name, rows in (("stats_28tests", tests), ("hv_effects", effects),
+                       ("fleet_coverage", fleet), ("nps_by_instance", nps_rows),
+                       ("best_energy", energy)):
+        _write_csv(os.path.join(out_dir, f"{name}.csv"), rows)
+
+    for e in effects:
+        print(f"  {e['instance']:<12} HV A12 {e['A12']:.3f}  median diff {e['median_diff']:.4f} "
+              f"95% CI [{e['ci_low']:.4f}, {e['ci_high']:.4f}]")
+    for f in fleet[-len(ALGORITHMS):]:
+        print(f"  fleet all {f['algorithm']:<7} runs {f['runs']}  reach 1/2/3 "
+              f"{f['reach_1']}/{f['reach_2']}/{f['reach_3']}  only 3: {f['only_3']}")
+    print(f"  Holm m={len(tests)}: {sum(bool(t['reject_holm']) for t in tests)} rejected; "
+          f"methods {sorted({t['method'].split('-> ')[1].split(';')[0] for t in tests})}")
+    for f in failed:
+        print(f"  CHECK FAILED: {f}")
+    if mismatches:
+        print(f"  STOP: non-HV raw p-value or U differs from the saved one: {'; '.join(mismatches)}")
+    print(f"stats: non-HV p-values {'MISMATCH' if mismatches else 'match the saved ones'}, "
+          f"checks {'FAILED' if failed else 'OK'} -> {os.path.relpath(out_dir, ROOT)}/"
+          "{stats_28tests,hv_effects,fleet_coverage,nps_by_instance,best_energy}.csv")
+    return not failed and not mismatches
+
+
+def _sig3(x: float) -> str:
+    # Three significant figures with trailing zeros kept (0.300, 4.50), as in Table III.
+    return f"{x:#.3g}".rstrip(".")
+
+
+# Table 2 columns: metric, header, whether higher is better, cell format.
+TABLE2 = (("hv", r"HV\,$\uparrow$", True, lambda v: f"{v:.3f}"),
+          ("igd", r"IGD\,$\downarrow$", False, _sig3),
+          ("ct", r"CT\,(s)\,$\downarrow$", False, lambda v: f"{v:.2f}"))
+THIN, TO = r"\,", r"$\to$"
+GENERATED = "% Generated by scripts/rebuild_daus2027.py (step tables); do not edit by hand."
+
+
+def _table2(out_dir: str) -> tuple[list[dict], list[str], list[str]]:
+    tests = {(r["instance"], r["metric"]): r for r in _read_csv(os.path.join(out_dir, "stats_28tests.csv"))}
+    fleet = {(r["instance"], r["algorithm"]): r for r in _read_csv(os.path.join(out_dir, "fleet_coverage.csv"))}
+    rows, failed = [], []
+    tex = [GENERATED, r"\begin{tabular}{@{}llcccc@{}}", r"\toprule",
+           "Instance & Alg. & " + " & ".join(h for _, h, _, _ in TABLE2) + r" & Fleet 1/2/3 \\",
+           r"\midrule"]
+    for i, instance in enumerate(INSTANCES):
+        csv_rows = {algo: {"instance": instance, "algorithm": LABEL[algo]} for algo in MAIN}
+        cells = {algo: [] for algo in MAIN}
+        for metric, _, higher, fmt in TABLE2:
+            t = tests[(instance, metric)]
+            med = {algo: float(t[f"median_{algo}"]) for algo in MAIN}
+            iqr = {algo: float(t[f"iqr_{algo}"]) for algo in MAIN}
+            better = max(MAIN, key=lambda a: med[a] if higher else -med[a])
+            tie = med["nsga2"] == med["mopso"]
+            significant = t["reject_holm"] == "True"
+            if significant and tie:
+                failed.append(f"{instance} {metric}: significant with equal medians")
+            # The marker sits on the MOPSO row: its outcome against NSGA-II after Holm.
+            marker = ("+" if better == "mopso" else "-") if significant and not tie else "≈"
+            for algo in MAIN:
+                m, q = fmt(med[algo]), fmt(iqr[algo])
+                cell = rf"\textbf{{{m}}}" if algo == better and not tie else m
+                if algo == "mopso":
+                    cell += {"+": "$^{+}$", "-": "$^{-}$", "≈": r"$^{\approx}$"}[marker]
+                cells[algo].append(f"{cell} [{q}]")
+                csv_rows[algo].update({f"{metric}_median": m, f"{metric}_iqr": q,
+                                       f"{metric}_better_median": algo == better and not tie,
+                                       f"{metric}_marker": marker if algo == "mopso" else "",
+                                       f"{metric}_p_holm": t["p_holm"]})
+        for algo in MAIN:
+            f = fleet[(instance, algo)]
+            reach = "/".join(f[f"reach_{m}"] for m in (1, 2, 3))
+            csv_rows[algo].update({"fleet_1_2_3": reach, "runs": f["runs"]})
+            cells[algo].append(reach)
+            rows.append(csv_rows[algo])
+        if i:
+            tex.append(r"\midrule")
+        tex.append(rf"\multirow{{2}}{{*}}{{{instance}}}")
+        tex += [f"  & {LABEL[algo]} & " + " & ".join(cells[algo]) + r" \\" for algo in MAIN]
+    tex += [r"\bottomrule", r"\end{tabular}"]
+    return rows, tex, failed
+
+
+def _thousands(n: int, tex: bool) -> str:
+    return f"{n:,}".replace(",", THIN if tex else ",")
+
+
+def _table1(out_dir: str) -> tuple[list[dict], list[str]]:
+    with open(os.path.join(out_dir, "config_paper.json")) as fh:
+        config = json.load(fh)
+    budget_rows = _read_csv(os.path.join(out_dir, "budget_summary.csv"))
+    hp_n, hp_m = config["hyperparams"]["nsga2"], config["hyperparams"]["mopso"]
+    slots, uav, seeds = config["evaluation_slots"], config["uav"], config["seeds"]
+
+    def evals(algo: str, tex: bool) -> str:
+        arm = [r for r in budget_rows if r["algorithm"] == algo]
+        lo = min(int(r["n_evals_min"]) for r in arm)
+        hi = max(int(r["n_evals_max"]) for r in arm)
+        dash = "--" if tex else "–"
+        return _thousands(lo, tex) if lo == hi else f"{_thousands(lo, tex)}{dash}{_thousands(hi, tex)}"
+
+    def max_dev(algo: str, tex: bool) -> str:
+        arm = [r["n_evals_max_rel_dev_pct"] for r in budget_rows if r["algorithm"] == algo]
+        return max(arm, key=float) + (THIN + r"\%" if tex else " %")
+
+    ks = {inst["K"] for inst in config["instances"].values()}
+    if len(ks) != 1:
+        raise ValueError("Table 1 assumes one K for every instance")
+    k = ks.pop()
+
+    def unit(value, symbol: str, tex: bool) -> str:
+        return f"{value}{THIN if tex else ' '}{symbol}"
+
+    power = uav["alpha_W_per_kg"] * uav["mass_kg"] + uav["beta_W"]
+    instances = [f"{name.partition('-k')[0]} ({inst['N']})" for name, inst in config["instances"].items()]
+    na = "--"
+    # (tex label, plain label, NSGA-II, MOPSO); a callable value gets tex=True/False.
+    per_algo = [
+        ("Population / swarm size", "Population / swarm size", hp_n["pop"], hp_m["swarm"]),
+        ("Generations / iterations", "Generations / iterations", hp_n["gens"], hp_m["iters"]),
+        (r"Crossover prob.\ $p_c$", "Crossover prob. p_c", hp_n["pcx"], na),
+        ("Mutation prob., order / counts", "Mutation prob., order / counts",
+         f"{hp_n['pmut']} / {hp_n['pmut_counts']}", na),
+        ("Archive size / grid divisions", "Archive size / grid divisions", na,
+         f"{hp_m['archive_size']} / {hp_m['grid_divisions']}"),
+        (r"Inertia $w$ / $c_1$ / $c_2$", "Inertia w / c1 / c2", na,
+         f"{hp_m['w_inertia']} / {hp_m['c1']} / {hp_m['c2']}"),
+        (r"Velocity clamp $v_{\max}$", "Velocity clamp v_max", na, hp_m["vmax_frac"]),
+        ("Turbulence rate", "Turbulence rate", na,
+         lambda tex: f"{hp_m['mut_rate']} {TO if tex else '->'} {hp_m['mut_floor']}"),
+        ("Evaluation slots per run", "Evaluation slots per run",
+         lambda tex: _thousands(slots["nsga2"], tex), lambda tex: _thousands(slots["mopso"], tex)),
+        ("Evaluations per run (min--max)", "Evaluations per run (min-max)",
+         lambda tex: evals("nsga2", tex), lambda tex: evals("mopso", tex)),
+        (rf"Max.\ deviation from {_thousands(slots['mopso'], True)}",
+         f"Max. deviation from {_thousands(slots['mopso'], False)}",
+         lambda tex: max_dev("nsga2", tex), lambda tex: max_dev("mopso", tex)),
+    ]
+    # (tex label, plain label, value) shared by both methods.
+    shared = [
+        (r"UAV mass $m$, cruise speed $v$", "UAV mass m, cruise speed v",
+         lambda tex: f"{unit(uav['mass_kg'], 'kg', tex)}, "
+                     f"{unit(uav['v_cruise_m_per_s'], 'm/s', tex)}"),
+        (r"Power $\alpha$, $\beta$; $\alpha m+\beta$", "Power alpha, beta; alpha*m + beta",
+         lambda tex: f"{unit(uav['alpha_W_per_kg'], 'W/kg', tex)}, {unit(uav['beta_W'], 'W', tex)}; "
+                     f"{unit(f'{power:.1f}', 'W', tex)}"),
+        (r"Fleet size $K$; seeds", "Fleet size K; seeds",
+         lambda tex: f"{k}; {seeds[0]}{'--' if tex else '-'}{seeds[-1]}"),
+        (r"Instances ($N$ POIs)", "Instances (N POIs)", lambda tex: ", ".join(instances)),
+    ]
+
+    def val(v, tex: bool) -> str:
+        return v(tex) if callable(v) else str(v)
+
+    rows = [{"parameter": plain, "nsga2": val(n, False), "mopso": val(m, False), "shared": ""}
+            for _, plain, n, m in per_algo]
+    rows += [{"parameter": plain, "nsga2": "", "mopso": "", "shared": val(v, False)}
+             for _, plain, v in shared]
+    tex = [GENERATED, r"\begin{tabular}{@{}lll@{}}", r"\toprule",
+           r"Parameter & NSGA-II & MOPSO \\", r"\midrule"]
+    tex += [f"{label} & {val(n, True)} & {val(m, True)} " + r"\\" for label, _, n, m in per_algo]
+    tex.append(r"\midrule")
+    for label, _, v in shared[:-1]:
+        tex.append(f"{label} & \\multicolumn{{2}}{{l}}{{{val(v, True)}}} " + r"\\")
+    # The instance list is too wide for one line of a column: two lines.
+    label = shared[-1][0]
+    tex.append(f"{label} & \\multicolumn{{2}}{{l}}{{{', '.join(instances[:2])},}} " + r"\\")
+    tex.append(f" & \\multicolumn{{2}}{{l}}{{{', '.join(instances[2:])}}} " + r"\\")
+    tex += [r"\bottomrule", r"\end{tabular}"]
+    return rows, tex
+
+
+TABLE_FILES = ("table1.csv", "table1.tex", "table2.csv", "table2.tex")
+
+
+def tables(results_dir: str, out_dir: str, manuscript_dir: str | None = None) -> bool:
+    """[R5, R6] Table 1 (configuration) and Table 2 (HV, IGD, CT, fleet) as CSV and bare tabular.
+
+    Reads only files this script wrote into ``out_dir`` (``stats_28tests.csv``,
+    ``fleet_coverage.csv``, ``config_paper.json``, ``budget_summary.csv``), so every
+    cell traces to one of them. Copies the four files to ``manuscript_dir`` when given.
+    """
+    rows2, tex2, failed = _table2(out_dir)
+    rows1, tex1 = _table1(out_dir)
+    _write_csv(os.path.join(out_dir, "table1.csv"), rows1)
+    _write_csv(os.path.join(out_dir, "table2.csv"), rows2)
+    for name, lines in (("table1.tex", tex1), ("table2.tex", tex2)):
+        with open(os.path.join(out_dir, name), "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+
+    if manuscript_dir is None:
+        print("  manuscript copy skipped: --out is not the default")
+    elif not os.path.isdir(manuscript_dir):
+        print(f"  manuscript copy skipped: {manuscript_dir} does not exist")
+    else:
+        for name in TABLE_FILES:
+            shutil.copyfile(os.path.join(out_dir, name), os.path.join(manuscript_dir, name))
+        print(f"  copied {len(TABLE_FILES)} files -> {os.path.relpath(manuscript_dir, ROOT)}")
+    for f in failed:
+        print(f"  CHECK FAILED: {f}")
+    print(f"tables: Table 1 {len(rows1)} rows, Table 2 {len(rows2)} rows, checks "
+          f"{'FAILED' if failed else 'OK'} -> {os.path.relpath(out_dir, ROOT)}/table{{1,2}}.{{csv,tex}}")
+    return not failed
+
+
 STEPS = {"check_solutions": check_solutions, "initial_fleet": initial_fleet, "budget": budget,
-         "hv_audit": hv_audit}
+         "hv_audit": hv_audit, "stats": stats, "tables": tables}
 
 
 def main() -> None:
@@ -493,13 +840,21 @@ def main() -> None:
     ap.add_argument("--only", action="append", choices=list(STEPS), metavar="STEP",
                     help=f"run only this step (repeatable); steps: {', '.join(STEPS)}")
     ap.add_argument("--results-dir", default=os.path.join(ROOT, "results_cobudget"))
-    ap.add_argument("--out", default=os.path.join(ROOT, "docs", "daus2027"))
+    default_out = os.path.join(ROOT, "docs", "daus2027")
+    ap.add_argument("--out", default=default_out)
+    ap.add_argument("--manuscript-dir",
+                    default=os.path.normpath(os.path.join(ROOT, os.pardir, "peer_review",
+                                                          "daus2027", "generated")),
+                    help="where step tables copies its files (only when --out is the default)")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
+    # A trial --out must never overwrite the manuscript's copies.
+    same_out = os.path.abspath(args.out) == os.path.abspath(default_out)
+    extra = {"tables": {"manuscript_dir": args.manuscript_dir if same_out else None}}
     ok = True
     for name in args.only or list(STEPS):
-        ok = STEPS[name](args.results_dir, args.out) and ok
+        ok = STEPS[name](args.results_dir, args.out, **extra.get(name, {})) and ok
     # A failed check can change a conclusion (global rule 5): make it loud.
     sys.exit(0 if ok else 1)
 

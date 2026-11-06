@@ -346,3 +346,56 @@ All 360 runs ran back to back in a single sequence, with no overlap: within each
 - **Lines 614–616:** the CT cause ("MOPSO's per-iteration archive and grid bookkeeping accumulate over the long run") has no support and must go. At most, say that runs were sequential, in a fixed order by instance and arm. (E45)
 
 Budget verdict: MATCH (approximate parity)
+
+## Metric definitions
+
+Reviewer item R5, chunk C3. Code: `src/uav/evaluation/{reference_front,metrics,aggregate,stats}.py`, unchanged. Rebuild: steps `hv_audit` and `stats` of `scripts/rebuild_daus2027.py`. Numbers: the CSVs named below, in `docs/daus2027/`. Notation: A is a run's point set, R the normalized reference front, and ‖·‖₂ the Euclidean norm.
+
+### Point sets
+- **Run's point set A.** The distinct objective vectors (f₁ makespan in s, f₂ energy in J) of the run's saved final front (`aggregate._front_objs`). Duplicates are collapsed identically for both methods (see "Distinct objective vectors").
+- **Reference front.** The non-dominated union of the 60 fronts of an instance: 30 NSGA-II and 30 MOPSO seeds (`reference_front.build_reference_front`). DMOPSO does not change it (`hv_audit.md`).
+  - **It is an empirical approximation of the Pareto front, with no optimality certificate.** No exact solver or known-optimum bound was used.
+  - On all four instances it is made up entirely of NSGA-II points: `ref_share_pct` is 100 for NSGA-II and 0 for MOPSO in `hv_points.csv`, and the front sizes are in `ref_front_size`.
+
+### Normalization
+For each objective j and instance, f′ⱼ = (fⱼ − loⱼ)/(hiⱼ − loⱼ), where loⱼ and hiⱼ are the minimum and maximum of fⱼ over the reference front (`reference_front.{reference_bounds,normalize}`; values in `hv_bounds.csv`).
+- One (lo, hi) serves every method, seed and metric.
+- **There is no clipping.** A point worse than the reference front's worst value has f′ > 1: every MOPSO point has f′₂ > 1.1 (`hv_audit.md`).
+- The near-zero-range guard in `normalize` never triggers here.
+- No further rationale is claimed for this normalization.
+
+### Indicators
+All indicators are computed in the normalized space.
+- **HV ↑.**
+  - The area of the region dominated by A and bounded by the reference point r = 1.1 × the per-objective worst normalized value, pooled over NSGA-II and MOPSO across all seeds. r is common to both methods; per instance it is `ref_f1` and `ref_f2` in `hv_per_run.csv`.
+  - It is reported as a fraction of the box [0, r₁] × [0, r₂], so it lies in [0, 1].
+  - It is computed by an exact 2-D sweep (`metrics.hypervolume`). Every point of both methods lies strictly inside the box, so no point is discarded.
+  - This audited HV replaces the old (1.1, 1.1) value (`hv_audit.md`).
+- **IGD ↓.** IGD(A) = (1/|R|) Σ_{z∈R} min_{a∈A} ‖z − a‖₂: the arithmetic mean, over the reference points, of the Euclidean distance from each reference point to its nearest obtained point (`metrics.igd`).
+- **GD ↓.** GD(A) = √(Σ_{a∈A} d(a)²) / |A|, where d(a) = min_{z∈R} ‖a − z‖₂ (`metrics.gd`). This is Van Veldhuizen's form: the root of the sum is divided by |A|. It is not the root-mean-square.
+- **SM ↓ (Schott spacing).**
+  - Let dᵢ be the L1 distance from point i of A to its nearest other point of A, and d̄ the mean of the dᵢ. Then SM = √(Σᵢ (dᵢ − d̄)² / (|A| − 1)) (`metrics.spacing`).
+  - SM is undefined (NaN) for |A| < 3. Those runs are dropped before the median and the test, so its n varies (`n_nsga2`, `n_mopso` in `stats_28tests.csv`).
+  - A small SM means even gaps, not good coverage: a front with few points can have a small SM and still cover the reference front poorly. Coverage is read from IGD and HV.
+- **DM ↑ (maximum spread).** DM(A) = √(Σⱼ (maxⱼ A − minⱼ A)²) (`metrics.maximum_spread`).
+- **NPS ↑.** |A|, the number of distinct objective vectors. Per instance: `nps_by_instance.csv`.
+- **CT ↓.** The run's wall-clock time in seconds, `wall_clock_s` in its JSON. See "CT provenance" for how the runs were scheduled.
+- **Fleet-size coverage.** A drone is active if its route visits at least one POI (`len(route) > 2`; an empty route is `[0, 0]`; `Solution.n_active_drones`).
+  - For each method, `fleet_coverage.csv` counts the runs whose saved front holds at least one solution with 1, 2 or 3 active drones (`reach_1`, `reach_2`, `reach_3`), and the runs whose front uses three drones only (`only_3`).
+  - It does this per instance (30 runs) and over all four instances (`all`, 120 runs). The front here is every saved solution, not only the distinct vectors.
+- **Best energy.** For each run, the minimum f₂ in J over its saved front; summarized as median and IQR per instance and method (`best_energy.csv`).
+
+### Single-point rule
+A run whose A has one point has NPS = 1. IGD and GD follow the formulas above. HV is the rectangle between the point and r, as a fraction of the box. DM = 0. SM is undefined and excluded, as it is for two points. `runs_1_point` and `runs_lt_3_points` in `nps_by_instance.csv` give the counts: no NSGA-II run has fewer than three points.
+
+### Statistics
+- **Summary.** Median and IQR (Q3 − Q1, linear interpolation) over the 30 seeds (`stats.median_iqr`), with NaN dropped.
+- **Test.** Two-sided Mann–Whitney U, unpaired: equal seed numbers don't pair seed s of one method with seed s of the other (`stats.mann_whitney`).
+  - SciPy's default `method="auto"` takes the asymptotic normal approximation, with tie and continuity correction, in all 28 tests. The script checks this against an explicit `method="asymptotic"` call (column `method`).
+  - U is NSGA-II's: NSGA-II is the first sample.
+- **Holm.** Applied once over the fixed family of the paper's 28 tests: 7 metrics (NPS, SM, GD, IGD, DM, HV, CT) × 4 instances, with `n_evals` excluded as before (`stats.holm`, α = 0.05). The audited HV takes the HV slot.
+  - `p_raw` is the unadjusted p-value and `p_holm` the Holm-adjusted one (monotone, statsmodels convention).
+  - `reject_holm` is `p_holm` ≤ 0.05.
+- **Effect size and CI, HV only** (`hv_effects.csv`).
+  - A₁₂ = U/(n₁n₂) = P(HV_NSGA-II > HV_MOPSO) + ½ P(tie) (Vargha–Delaney).
+  - The 95 % CI of the median difference (NSGA-II − MOPSO) is a percentile bootstrap with 10,000 resamples. Each method is resampled independently, with replacement, from one generator whose seed is recorded in the file.

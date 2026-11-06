@@ -1,0 +1,16 @@
+instance,algorithm,runs,reach_1,reach_2,reach_3,only_3
+eil51-k3,nsga2,30,28,30,30,0
+eil51-k3,mopso,30,0,1,30,29
+eil51-k3,dmopso,30,0,12,30,18
+berlin52-k3,nsga2,30,29,30,30,0
+berlin52-k3,mopso,30,0,0,30,30
+berlin52-k3,dmopso,30,0,5,30,25
+eil76-k3,nsga2,30,25,30,30,0
+eil76-k3,mopso,30,0,0,30,30
+eil76-k3,dmopso,30,0,0,30,30
+rat99-k3,nsga2,30,30,30,30,0
+rat99-k3,mopso,30,0,0,30,30
+rat99-k3,dmopso,30,0,0,30,30
+all,nsga2,120,112,120,120,0
+all,mopso,120,0,1,120,119
+all,dmopso,120,0,17,120,103
