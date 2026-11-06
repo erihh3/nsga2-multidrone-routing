@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -22,7 +23,7 @@ import numpy as np
 from uav.algorithms.nsga2 import NSGA2, _genotype_to_routes
 from uav.experiment.config import SEEDS, Budget, Hyperparams
 from uav.problem.decode import decode_random_key
-from uav.problem.fitness import evaluate
+from uav.problem.fitness import ALPHA, BETA, MASS, V_CRUISE, evaluate
 from uav.problem.instance import load_instance
 from uav.seeds import set_all_seeds
 
@@ -179,7 +180,130 @@ def initial_fleet(results_dir: str, out_dir: str) -> bool:
     return ok
 
 
-STEPS = {"check_solutions": check_solutions, "initial_fleet": initial_fleet}
+def _eval_slots(algo: str, hp: dict) -> int:
+    """Individuals that pass through a run: the initial set plus one per step.
+
+    NSGA-II has ``pop`` initial individuals and ``pop`` offspring per generation; the
+    swarm arms evaluate the initial swarm and the whole swarm every iteration.
+    """
+    if algo == "nsga2":
+        return hp["pop"] * (hp["gens"] + 1)
+    return hp["swarm"] * (hp["iters"] + 1)
+
+
+def _sha256(path: str) -> str:
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def _write_csv(path: str, rows: list[dict]) -> None:
+    with open(path, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def budget(results_dir: str, out_dir: str) -> bool:
+    """[R3, package] Evaluations per run, reuse, repair cost and the paper's configuration.
+
+    Writes ``budget_per_run.csv`` (360 runs), ``budget_summary.csv`` (min/mean/max
+    per instance and arm) and ``config_paper.json`` (hyperparameters from the runs,
+    parity, UAV parameters, seeds, instance files with SHA-256, N, K and depot).
+    """
+    rows, hps, parity, ok = [], {algo: set() for algo in ALGORITHMS}, {}, True
+    for instance in INSTANCES:
+        for algo in ALGORITHMS:
+            for seed in SEEDS:
+                with open(_run_path(results_dir, instance, algo, seed)) as fh:
+                    run = json.load(fh)
+                hp, n = run["hyperparams"], run["n_evals"]
+                hps[algo].add(json.dumps(hp, sort_keys=True))
+                slots = _eval_slots(algo, hp)
+                # Repair (_repair_counts, key clipping) and decoding never call the
+                # evaluator, and neither method has a local search: CountingEvaluator
+                # is reached only from run() (nsga2.py:273,293; mopso.py:224,261;
+                # dmopso.py:203,259). So both costs are 0 by construction; the slot
+                # checks catch extra calls in the swarm arms and bound them in NSGA-II.
+                ok = ok and (n <= slots if algo == "nsga2" else n == slots)
+                front = np.array(run["front"], dtype=float).reshape(-1, 2)
+                rows.append({"instance": instance, "algorithm": algo, "seed": seed,
+                             "n_evals": n, "reused_evals": slots - n,
+                             "repair_evaluator_calls": 0, "local_search_calls": 0,
+                             "wall_clock_s": run["wall_clock_s"],
+                             "front_points": len(front),
+                             # Same collapse as aggregate._front_objs (metrics use it).
+                             "front_distinct": len(np.unique(front, axis=0))})
+        with open(os.path.join(results_dir, f"{instance}_parity.json")) as fh:
+            p = json.load(fh)
+        parity[instance] = {"measured_nsga2_mean": p["measured_nsga2_mean"], "iters": p["iters"]}
+
+    # One configuration per arm across all instances and seeds, else config_paper.json lies.
+    ok = ok and all(len(s) == 1 for s in hps.values())
+    config_hp = {algo: json.loads(min(hps[algo])) for algo in ALGORITHMS}
+    ok = ok and all(v["iters"] == config_hp["mopso"]["iters"] for v in parity.values())
+    swarm_budget = _eval_slots("mopso", config_hp["mopso"])
+
+    summary = []
+    for instance in INSTANCES:
+        for algo in ALGORITHMS:
+            arm = [r for r in rows if r["instance"] == instance and r["algorithm"] == algo]
+            evals = np.array([r["n_evals"] for r in arm])
+            reused = np.array([r["reused_evals"] for r in arm])
+            wall = np.array([r["wall_clock_s"] for r in arm])
+            summary.append({
+                "instance": instance, "algorithm": algo, "runs": len(arm),
+                "n_evals_min": int(evals.min()), "n_evals_mean": f"{evals.mean():.1f}",
+                "n_evals_max": int(evals.max()),
+                "n_evals_max_rel_dev_pct":
+                    f"{100 * np.abs(evals - swarm_budget).max() / swarm_budget:.3f}",
+                "reused_min": int(reused.min()), "reused_mean": f"{reused.mean():.1f}",
+                "reused_max": int(reused.max()),
+                "repair_evaluator_calls": sum(r["repair_evaluator_calls"] for r in arm),
+                "local_search_calls": sum(r["local_search_calls"] for r in arm),
+                "wall_clock_s_min": f"{wall.min():.2f}", "wall_clock_s_mean": f"{wall.mean():.2f}",
+                "wall_clock_s_max": f"{wall.max():.2f}",
+                "front_points": sum(r["front_points"] for r in arm),
+                "front_distinct": sum(r["front_distinct"] for r in arm)})
+
+    instances = {}
+    for instance in INSTANCES:
+        inst = _load_paper_instance(instance)
+        rel = os.path.join("instances", f"{instance.partition('-k')[0]}.tsp")
+        instances[instance] = {
+            "file": rel, "sha256": _sha256(os.path.join(ROOT, rel)),
+            "N": inst.n_pois, "K": inst.k,
+            "depot": {"file_node": 1, "index": inst.depot,
+                      "coords": [float(c) for c in inst.coords[inst.depot]]}}
+    config = {
+        "source": "scripts/eval_cobudget.py (POP, GENS, SWARM); swarm-arm iters from "
+                  "results_cobudget/<instance>_parity.json",
+        "seeds": list(SEEDS),
+        "hyperparams": config_hp,
+        "dmopso": "diagnostic arm only, not part of the main comparison",
+        "evaluation_slots": {algo: _eval_slots(algo, config_hp[algo]) for algo in ALGORITHMS},
+        "parity": parity,
+        "uav": {"alpha_W_per_kg": ALPHA, "beta_W": BETA, "mass_kg": MASS,
+                "v_cruise_m_per_s": V_CRUISE},
+        "instances": instances,
+    }
+
+    _write_csv(os.path.join(out_dir, "budget_per_run.csv"), rows)
+    _write_csv(os.path.join(out_dir, "budget_summary.csv"), summary)
+    with open(os.path.join(out_dir, "config_paper.json"), "w") as fh:
+        json.dump(config, fh, indent=2)
+        fh.write("\n")
+
+    for s in summary:
+        print(f"  {s['instance']:<12} {s['algorithm']:<7} n_evals {s['n_evals_min']}-"
+              f"{s['n_evals_max']} mean {s['n_evals_mean']:>8}  reused mean "
+              f"{s['reused_mean']:>7}  distinct {s['front_distinct']}/{s['front_points']}")
+    print(f"budget: {len(rows)} runs, swarm budget {swarm_budget}, checks "
+          f"{'OK' if ok else 'FAILED'} -> {os.path.relpath(out_dir, ROOT)}/"
+          "{budget_per_run,budget_summary}.csv, config_paper.json")
+    return ok
+
+
+STEPS = {"check_solutions": check_solutions, "initial_fleet": initial_fleet, "budget": budget}
 
 
 def main() -> None:
