@@ -12,6 +12,8 @@ One pass, no duplicated geometry.
 
 Locked parameters (never change — sensitivity analysis is out of scope):
 alpha=46.7 W/kg, beta=26.9 W, m=2.0 kg, v_cruise=15 m/s.
+m is Dorling's battery-and-payload mass; the frame (W = 1.5 kg) is embedded in the
+fit behind alpha and beta, so it is not added to m.
 """
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ import numpy as np
 # Locked UAV parameters (Dorling 2017 linear model). Do not edit.
 ALPHA = 46.7      # W/kg
 BETA = 26.9       # W
+# MASS is Dorling's battery-and-payload mass m, not the all-up mass: the frame
+# (W = 1.5 kg) is embedded in the fit behind ALPHA and BETA.
 MASS = 2.0        # kg
 V_CRUISE = 15.0   # m/s
 

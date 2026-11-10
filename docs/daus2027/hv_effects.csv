@@ -1,0 +1,5 @@
+instance,n_nsga2,n_mopso,hv_median_nsga2,hv_median_mopso,median_diff,U_nsga2,A12,ci_low,ci_high,ci_level,resamples,bootstrap_seed,ci_method
+eil51-k3,30,30,0.8820464221478496,0.3202422421055029,0.5618041800423467,900.0,1.0,0.5186149625480954,0.6428477107665685,0.95,10000,2027,percentile bootstrap of median(NSGA-II) - median(MOPSO); each arm resampled independently with replacement
+berlin52-k3,30,30,0.9018236690527384,0.42705725402446093,0.47476641502827743,900.0,1.0,0.4380752086156087,0.5396108802555903,0.95,10000,2027,percentile bootstrap of median(NSGA-II) - median(MOPSO); each arm resampled independently with replacement
+eil76-k3,30,30,0.9415168694197036,0.4084515902030874,0.5330652792166162,900.0,1.0,0.49434499874542687,0.665564840481919,0.95,10000,2027,percentile bootstrap of median(NSGA-II) - median(MOPSO); each arm resampled independently with replacement
+rat99-k3,30,30,0.9457787867117797,0.2920278891795659,0.6537508975322138,900.0,1.0,0.551869291109585,0.7176169156835497,0.95,10000,2027,percentile bootstrap of median(NSGA-II) - median(MOPSO); each arm resampled independently with replacement

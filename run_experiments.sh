@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Reproduce every result AND figure from a clean clone.
-#   sweep  (4 instances x 2 algorithms x 10 seeds)  -> results/
+# Exploratory sweep and figures from a clean clone (Hyperparams defaults, gens=500).
+# NOT the DAUS 2027 preset: see "DAUS 2027 paper: reproduce" in README.md.
+#   sweep  (4 instances x 2 algorithms x 30 seeds)  -> results/
 #   figures (pareto / convergence / routes / animation) -> figures/
 # Phase 5 wired the runner; Phase 6 added the figure driver; this script chains them
 # so a single command reproduces the whole deliverable.
@@ -21,7 +22,7 @@ for arg in "$@"; do
 done
 
 if [[ ! -d .venv ]]; then
-    uv venv --python 3.13 .venv
+    uv venv --python 3.14 .venv
 fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
@@ -29,7 +30,7 @@ uv pip install -r requirements.txt
 uv pip install -e .
 
 # --- 1. the sweep (resumes; CLI filters pass through) -------------------------
-#   ./run_experiments.sh                                  # 4 x 2 x 10 = 80 runs
+#   ./run_experiments.sh                                  # 4 x 2 x 30 = 240 runs
 #   ./run_experiments.sh --instance eil51-k3              # one instance
 #   ./run_experiments.sh --algorithm nsga2                # one arm, all instances
 #   ./run_experiments.sh --instance eil51-k3 --seed 0,1,2 # split across sessions

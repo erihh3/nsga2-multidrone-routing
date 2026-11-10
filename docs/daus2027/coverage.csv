@@ -1,0 +1,9 @@
+instance,a,b,pairs,c_median,c_min,c_max,c_pooled,convention
+eil51-k3,nsga2,mopso,900,1.0000,1.0000,1.0000,1.0000,weak dominance: b is covered if some a has a <= b on both objectives (equal counts)
+eil51-k3,mopso,nsga2,900,0.0000,0.0000,0.0000,0.0000,weak dominance: b is covered if some a has a <= b on both objectives (equal counts)
+berlin52-k3,nsga2,mopso,900,1.0000,1.0000,1.0000,1.0000,weak dominance: b is covered if some a has a <= b on both objectives (equal counts)
+berlin52-k3,mopso,nsga2,900,0.0000,0.0000,0.0000,0.0000,weak dominance: b is covered if some a has a <= b on both objectives (equal counts)
+eil76-k3,nsga2,mopso,900,1.0000,1.0000,1.0000,1.0000,weak dominance: b is covered if some a has a <= b on both objectives (equal counts)
+eil76-k3,mopso,nsga2,900,0.0000,0.0000,0.0000,0.0000,weak dominance: b is covered if some a has a <= b on both objectives (equal counts)
+rat99-k3,nsga2,mopso,900,1.0000,1.0000,1.0000,1.0000,weak dominance: b is covered if some a has a <= b on both objectives (equal counts)
+rat99-k3,mopso,nsga2,900,0.0000,0.0000,0.0000,0.0000,weak dominance: b is covered if some a has a <= b on both objectives (equal counts)
